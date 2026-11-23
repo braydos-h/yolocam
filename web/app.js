@@ -114,6 +114,11 @@
     document.addEventListener("fullscreenchange", () => {
       window.setTimeout(alignOverlay, 60);
     });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && els.stage.classList.contains("cinema")) {
+        exitCinema();
+      }
+    });
     document.addEventListener("visibilitychange", () => {
       if (!document.hidden && (!state.ws || state.ws.readyState !== WebSocket.OPEN)) {
         connectWebSocket();
@@ -755,16 +760,42 @@
   }
 
   async function toggleFullscreen() {
-    try {
-      if (document.fullscreenElement) {
+    if (document.fullscreenElement) {
+      try {
         await document.exitFullscreen();
-      } else if (els.stage.requestFullscreen) {
-        await els.stage.requestFullscreen();
+      } catch (error) {
+        showToast(`Exiting fullscreen failed: ${error.message}`, "error");
       }
-      window.setTimeout(alignOverlay, 80);
-    } catch (error) {
-      showToast(`Fullscreen failed: ${error.message}`, "error");
+      return;
     }
+    if (els.stage.classList.contains("cinema")) {
+      exitCinema();
+      return;
+    }
+    try {
+      if (els.stage.requestFullscreen) {
+        await els.stage.requestFullscreen();
+        if (document.fullscreenElement) {
+          window.setTimeout(alignOverlay, 80);
+          return;
+        }
+      }
+    } catch {
+      // Native fullscreen is unavailable or denied; use the in-page fallback.
+    }
+    enterCinema();
+  }
+
+  function enterCinema() {
+    els.stage.classList.add("cinema");
+    document.body.classList.add("cinema-open");
+    window.setTimeout(alignOverlay, 40);
+  }
+
+  function exitCinema() {
+    els.stage.classList.remove("cinema");
+    document.body.classList.remove("cinema-open");
+    window.setTimeout(alignOverlay, 40);
   }
 
   function showToast(message, kind = "") {
