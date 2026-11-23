@@ -513,7 +513,7 @@ cargo test -- --test-threads=1
 Current verified results in this workspace:
 
 - `cargo test -- --test-threads=1`:
-  - **41 unit tests passed**.
+  - **42 unit tests passed**.
   - **3 simulated-video integration tests passed**.
   - 1 optional real-model test ignored by default.
 - `cargo clippy --all-targets -- -D warnings`: passed.
