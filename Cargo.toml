@@ -1,0 +1,59 @@
+[package]
+name = "yolocam"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.92"
+description = "Local RTSP camera monitor with YOLO person and car detection"
+license = "MIT"
+
+[lib]
+name = "yolocam"
+path = "src/lib.rs"
+
+[[bin]]
+name = "yolocam"
+path = "src/main.rs"
+
+[dependencies]
+async-stream = "0.3"
+axum = { version = "0.8", features = ["ws"] }
+bytes = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+font8x8 = "0.3"
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+memchr = "2"
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "load-dynamic", "api-31", "tracing"] }
+percent-encoding = "2"
+rusqlite = { version = "0.43", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+toml = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+url = "2"
+
+[features]
+default = []
+# Optional ONNX Runtime execution providers. ONNX Runtime itself is loaded
+# dynamically at runtime; see README for the accompanying provider libraries.
+cuda = ["ort/cuda"]
+directml = ["ort/directml"]
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+
+[profile.dev]
+# ONNX Runtime and image decoding are still quick enough in debug; keep
+# dependencies optimized so the dashboard does not feel sluggish.
+opt-level = 1
+[profile.dev.package."*"]
+opt-level = 3
