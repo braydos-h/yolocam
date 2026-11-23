@@ -1,12 +1,7 @@
 # YOLOCam
 
-A local, continuously running RTSP camera monitor written in Rust. It decodes
-H.264/H.265 RTSP streams with FFmpeg, reconnects automatically, serves a live
-MJPEG dashboard, and runs a YOLO11/YOLOv8 ONNX model **once per detection
-interval** (default: one second) to find **people** and **cars**.
+## A Rust-based RTSP camera monitor with FFmpeg decoding, automatic reconnection, live MJPEG dashboard, and YOLOv detection for people and cars at configurable intervals.
 
-All RTSP credentials, decoding, inference, screenshots, and persistence stay in
-Rust on the local machine. The browser never receives camera credentials.
 
 > Counts are per-frame detections, and totals are cumulative detection events.
 > There is no object tracker, so the app does not count unique people or
