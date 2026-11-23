@@ -516,6 +516,7 @@ mod tests {
     fn parser_keeps_trailing_ff_and_bounds_garbage() {
         let mut parser = MjpegParser::new();
         parser.push(&[0x00, 0x01, 0xFF]);
+        assert!(parser.next_frame().is_none());
         assert_eq!(&parser.buffer[..], &[0xFF]);
         parser.push(&[0xD8, 0x00, 0xFF, 0xD9]);
         let frame = parser.next_frame().unwrap();

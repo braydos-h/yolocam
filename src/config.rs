@@ -307,11 +307,8 @@ impl Config {
                     .into(),
             )
         })?;
-        if !matches!(url.scheme(), "rtsp" | "rtsps") {
-            return Err(ConfigError::Invalid(
-                "camera.rtsp_url must use rtsp:// or rtsps://".into(),
-            ));
-        }
+        // Scheme validation happens in Config::validate so every problem can
+        // be reported in one message. Normalization only removes userinfo.
         if let Some((username, password)) = take_url_credentials(&mut url)? {
             self.camera.username = Some(username);
             self.camera.password = password;
@@ -544,25 +541,27 @@ impl Config {
                     outcome.camera_connection_changed = true;
                 } else if host_changed {
                     // Never reuse credentials intended for a different camera host.
-                    if self.camera.username.take().is_some()
-                        || self.camera.password.take().is_some()
-                    {
+                    let had_username = self.camera.username.take().is_some();
+                    let had_password = self.camera.password.take().is_some();
+                    if had_username || had_password {
                         outcome.camera_connection_changed = true;
                     }
                 }
             }
 
             if camera.clear_credentials {
-                if self.camera.username.take().is_some() || self.camera.password.take().is_some() {
+                let had_username = self.camera.username.take().is_some();
+                let had_password = self.camera.password.take().is_some();
+                if had_username || had_password {
                     outcome.camera_connection_changed = true;
                 }
             } else {
                 if let Some(username) = &camera.username {
                     let username = username.trim();
                     if username.is_empty() {
-                        let changed = self.camera.username.take().is_some()
-                            || self.camera.password.take().is_some();
-                        outcome.camera_connection_changed |= changed;
+                        let had_username = self.camera.username.take().is_some();
+                        let had_password = self.camera.password.take().is_some();
+                        outcome.camera_connection_changed |= had_username || had_password;
                     } else {
                         if self.camera.username.as_deref() != Some(username) {
                             self.camera.username = Some(username.to_string());
