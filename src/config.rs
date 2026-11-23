@@ -12,7 +12,7 @@ const DEFAULT_CONFIDENCE: f32 = 0.5;
 const DEFAULT_INTERVAL_MS: u64 = 1_000;
 const MIN_INTERVAL_MS: u64 = 100;
 const MAX_INTERVAL_MS: u64 = 60_000;
-const DEFAULT_PREVIEW_WIDTH: u32 = 1_280;
+const DEFAULT_PREVIEW_MAX_DIMENSION: u32 = 1_280;
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -24,7 +24,7 @@ pub enum ConfigError {
     Invalid(String),
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub camera: CameraConfig,
@@ -35,6 +35,10 @@ pub struct Config {
     /// Such values are never written back to disk by the settings API.
     #[serde(skip)]
     pub env_camera_locked: bool,
+    /// True only when the credentials themselves came from the environment;
+    /// controls whether username/password are stripped when saving.
+    #[serde(skip)]
+    pub env_credentials_locked: bool,
 }
 
 impl fmt::Debug for Config {
@@ -45,19 +49,8 @@ impl fmt::Debug for Config {
             .field("storage", &self.storage)
             .field("server", &self.server)
             .field("env_camera_locked", &self.env_camera_locked)
+            .field("env_credentials_locked", &self.env_credentials_locked)
             .finish()
-    }
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            camera: CameraConfig::default(),
-            yolo: YoloConfig::default(),
-            storage: StorageConfig::default(),
-            server: ServerConfig::default(),
-            env_camera_locked: false,
-        }
     }
 }
 
@@ -259,6 +252,7 @@ impl Config {
 
     pub fn apply_env_overrides(&mut self, env: EnvOverrides) -> Result<(), ConfigError> {
         let mut camera_locked = false;
+        let mut credentials_locked = false;
 
         if let Some(raw_url) = env.rtsp_url {
             let mut url = Url::parse(&raw_url)
@@ -272,6 +266,7 @@ impl Config {
                 self.camera.username = Some(username);
                 self.camera.password = password;
                 self.env_camera_locked = true;
+                credentials_locked = true;
             }
             self.camera.rtsp_url = url.to_string();
             camera_locked = true;
@@ -280,11 +275,13 @@ impl Config {
         if let Some(username) = env.username {
             self.camera.username = Some(username);
             self.env_camera_locked = true;
+            credentials_locked = true;
             camera_locked = true;
         }
         if let Some(password) = env.password {
             self.camera.password = Some(password);
             self.env_camera_locked = true;
+            credentials_locked = true;
             camera_locked = true;
         }
         if let Some(model_path) = env.model_path {
@@ -295,6 +292,7 @@ impl Config {
         }
 
         self.env_camera_locked |= camera_locked;
+        self.env_credentials_locked |= credentials_locked;
         Ok(())
     }
 
@@ -377,12 +375,15 @@ impl Config {
         }
         match self.yolo.device {
             InferenceDevice::Cpu => {}
-            InferenceDevice::Cuda if !cfg!(feature = "cuda") => problems.push(
-                "yolo.device = \"cuda\" requires a build with --features cuda".into(),
-            ),
+            InferenceDevice::Cuda if !cfg!(feature = "cuda") => {
+                problems.push("yolo.device = \"cuda\" requires a build with --features cuda".into())
+            }
             InferenceDevice::DirectMl if !cfg!(feature = "directml") => problems.push(
                 "yolo.device = \"directml\" requires a build with --features directml".into(),
             ),
+            InferenceDevice::DirectMl if !cfg!(windows) => {
+                problems.push("yolo.device = \"directml\" is only available on Windows".into())
+            }
             _ => {}
         }
 
@@ -420,12 +421,14 @@ impl Config {
             ));
         }
         if let Some(username) = &self.camera.username {
-            url.set_username(username)
-                .map_err(|_| ConfigError::Invalid("camera.username cannot be encoded in a URL".into()))?;
+            url.set_username(username).map_err(|_| {
+                ConfigError::Invalid("camera.username cannot be encoded in a URL".into())
+            })?;
         }
         if let Some(password) = &self.camera.password {
-            url.set_password(Some(password))
-                .map_err(|_| ConfigError::Invalid("camera.password cannot be encoded in a URL".into()))?;
+            url.set_password(Some(password)).map_err(|_| {
+                ConfigError::Invalid("camera.password cannot be encoded in a URL".into())
+            })?;
         }
         Ok(url)
     }
@@ -468,8 +471,8 @@ impl Config {
         PathBuf::from(&self.storage.database_path)
     }
 
-    pub fn preview_width(&self) -> u32 {
-        DEFAULT_PREVIEW_WIDTH
+    pub fn preview_max_dimension(&self) -> u32 {
+        DEFAULT_PREVIEW_MAX_DIMENSION
     }
 
     pub fn apply_update(&mut self, update: &SettingsUpdate) -> Result<UpdateOutcome, ConfigError> {
@@ -492,9 +495,7 @@ impl Config {
             if let Some(name) = &camera.name {
                 let name = name.trim();
                 if name.is_empty() {
-                    return Err(ConfigError::Invalid(
-                        "camera.name must not be empty".into(),
-                    ));
+                    return Err(ConfigError::Invalid("camera.name must not be empty".into()));
                 }
                 if name.chars().count() > 64 {
                     return Err(ConfigError::Invalid(
@@ -662,6 +663,11 @@ impl Config {
                             "device \"directml\" requires a build with --features directml".into(),
                         ));
                     }
+                    InferenceDevice::DirectMl if !cfg!(windows) => {
+                        return Err(ConfigError::Invalid(
+                            "device \"directml\" is only available on Windows".into(),
+                        ));
+                    }
                     _ => {}
                 }
                 if self.yolo.device != device {
@@ -708,24 +714,23 @@ impl Config {
 
         let mut restart_required: Vec<&'static str> = restart.into_iter().collect();
         restart_required.sort_unstable();
-        outcome.restart_required = restart_required
-            .into_iter()
-            .map(str::to_string)
-            .collect();
+        outcome.restart_required = restart_required.into_iter().map(str::to_string).collect();
         Ok(outcome)
     }
 
     pub fn save(&self, path: &Path) -> Result<(), ConfigError> {
         let mut persisted = self.clone();
-        if persisted.env_camera_locked {
+        if persisted.env_credentials_locked {
             // Environment-provided RTSP credentials are runtime-only.
             persisted.camera.username = None;
             persisted.camera.password = None;
         }
         persisted.env_camera_locked = false;
+        persisted.env_credentials_locked = false;
 
-        let text = toml::to_string_pretty(&persisted)
-            .map_err(|error| ConfigError::Invalid(format!("cannot serialize configuration: {error}")))?;
+        let text = toml::to_string_pretty(&persisted).map_err(|error| {
+            ConfigError::Invalid(format!("cannot serialize configuration: {error}"))
+        })?;
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
                 fs::create_dir_all(parent)?;
@@ -818,7 +823,7 @@ pub struct UpdateOutcome {
     pub restart_required: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct SettingsUpdate {
     pub camera: Option<CameraUpdate>,
@@ -826,17 +831,7 @@ pub struct SettingsUpdate {
     pub storage: Option<StorageUpdate>,
 }
 
-impl Default for SettingsUpdate {
-    fn default() -> Self {
-        Self {
-            camera: None,
-            yolo: None,
-            storage: None,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct CameraUpdate {
     pub name: Option<String>,
@@ -851,21 +846,7 @@ pub struct CameraUpdate {
     pub ffmpeg_path: Option<String>,
 }
 
-impl Default for CameraUpdate {
-    fn default() -> Self {
-        Self {
-            name: None,
-            rtsp_url: None,
-            username: None,
-            password: None,
-            clear_credentials: false,
-            reconnect_delay_seconds: None,
-            ffmpeg_path: None,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct YoloUpdate {
     pub model_path: Option<String>,
@@ -877,36 +858,12 @@ pub struct YoloUpdate {
     pub onnxruntime_path: Option<String>,
 }
 
-impl Default for YoloUpdate {
-    fn default() -> Self {
-        Self {
-            model_path: None,
-            confidence_threshold: None,
-            interval_ms: None,
-            detect_person: None,
-            detect_car: None,
-            device: None,
-            onnxruntime_path: None,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct StorageUpdate {
     pub save_screenshots: Option<bool>,
     pub screenshot_directory: Option<String>,
     pub retention_days: Option<u32>,
-}
-
-impl Default for StorageUpdate {
-    fn default() -> Self {
-        Self {
-            save_screenshots: None,
-            screenshot_directory: None,
-            retention_days: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1027,9 +984,14 @@ port = 8080
             })
             .unwrap();
         assert!(config.env_camera_locked);
+        assert!(config.env_credentials_locked);
         assert_eq!(config.camera.username.as_deref(), Some("bob"));
         assert_eq!(config.camera.password.as_deref(), Some("newpass"));
-        assert!(!config.effective_rtsp_url().unwrap().as_str().contains("alice"));
+        assert!(!config
+            .effective_rtsp_url()
+            .unwrap()
+            .as_str()
+            .contains("alice"));
     }
 
     #[test]

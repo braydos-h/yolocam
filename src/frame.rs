@@ -78,9 +78,7 @@ impl FrameStore {
         self.inner
             .camera_fps_bits
             .store(fps.to_bits(), Ordering::Relaxed);
-        self.inner
-            .frames_received
-            .fetch_add(1, Ordering::Relaxed);
+        self.inner.frames_received.fetch_add(1, Ordering::Relaxed);
         self.inner
             .last_frame_epoch_ms
             .store(epoch.timestamp_millis(), Ordering::Relaxed);
@@ -113,9 +111,8 @@ impl FrameStore {
             sequence: self.sequence(),
             camera_fps: f32::from_bits(self.inner.camera_fps_bits.load(Ordering::Relaxed)),
             last_frame_at: if last_epoch_ms > 0 {
-                DateTime::<Utc>::from_timestamp_millis(last_epoch_ms).map(|timestamp| {
-                    timestamp.to_rfc3339_opts(SecondsFormat::Millis, true)
-                })
+                DateTime::<Utc>::from_timestamp_millis(last_epoch_ms)
+                    .map(|timestamp| timestamp.to_rfc3339_opts(SecondsFormat::Millis, true))
             } else {
                 None
             },

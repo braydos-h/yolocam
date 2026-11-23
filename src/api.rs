@@ -35,7 +35,10 @@ pub fn router(state: AppState) -> Router {
         .route("/app.js", get(js))
         .route("/api/health", get(health))
         .route("/api/stats", get(stats))
-        .route("/api/settings", get(get_settings).post(update_settings).put(update_settings))
+        .route(
+            "/api/settings",
+            get(get_settings).post(update_settings).put(update_settings),
+        )
         .route("/api/history", get(history))
         .route("/api/stream", get(crate::stream::mjpeg_stream))
         .route("/api/frame.jpg", get(crate::stream::latest_jpeg))
@@ -64,10 +67,7 @@ async fn security_headers(request: Request, next: Next) -> Response {
         header::REFERRER_POLICY,
         HeaderValue::from_static("no-referrer"),
     );
-    headers.insert(
-        header::X_FRAME_OPTIONS,
-        HeaderValue::from_static("DENY"),
-    );
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
     headers.insert(
         header::HeaderName::from_static("permissions-policy"),
         HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
@@ -92,10 +92,9 @@ fn static_asset(content: &'static str, mime: &'static str) -> Response {
     response
         .headers_mut()
         .insert(header::CONTENT_TYPE, HeaderValue::from_static(mime));
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("no-cache"),
-    );
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
     response
 }
 
@@ -118,9 +117,7 @@ async fn stats(State(app): State<AppState>) -> Json<crate::state::LiveSnapshot> 
     Json(app.snapshot())
 }
 
-async fn get_settings(
-    State(app): State<AppState>,
-) -> Json<crate::config::PublicSettings> {
+async fn get_settings(State(app): State<AppState>) -> Json<crate::config::PublicSettings> {
     Json(app.config().public_settings())
 }
 
@@ -133,12 +130,14 @@ async fn update_settings(
     let outcome = candidate.apply_update(&update)?;
     candidate.validate()?;
 
-    candidate.save(app.config_path()).map_err(|error| match error {
-        ConfigError::Io(io_error) => ApiError::internal(format!(
-            "settings validated but could not be saved: {io_error}"
-        )),
-        other => ApiError::bad_request(other.to_string()),
-    })?;
+    candidate
+        .save(app.config_path())
+        .map_err(|error| match error {
+            ConfigError::Io(io_error) => ApiError::internal(format!(
+                "settings validated but could not be saved: {io_error}"
+            )),
+            other => ApiError::bad_request(other.to_string()),
+        })?;
 
     let env_locked = candidate.env_camera_locked;
     app.replace_config(candidate.clone());
@@ -177,7 +176,12 @@ async fn history(
     State(app): State<AppState>,
     Query(query): Query<HistoryQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let class = match query.class.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+    let class = match query
+        .class
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         Some(value) => Some(
             DetectedClass::from_name(value)
                 .ok_or_else(|| ApiError::bad_request("class must be person or car"))?,
@@ -237,15 +241,19 @@ async fn screenshot(
         || filename.contains('/')
         || filename.contains('\\')
         || !filename.to_ascii_lowercase().ends_with(".jpg")
-        || !filename
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.'))
+        || !filename.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+        })
     {
         return Err(ApiError::bad_request("invalid screenshot filename"));
     }
     let directory = app.config().screenshot_dir();
     let path = directory.join(&filename);
-    if Path::new(&filename).file_name().and_then(|name| name.to_str()) != Some(filename.as_str()) {
+    if Path::new(&filename)
+        .file_name()
+        .and_then(|name| name.to_str())
+        != Some(filename.as_str())
+    {
         return Err(ApiError::bad_request("invalid screenshot filename"));
     }
     let bytes = tokio::fs::read(&path).await.map_err(|error| {
@@ -290,10 +298,7 @@ async fn camera_reconnect(State(app): State<AppState>) -> Json<serde_json::Value
     }))
 }
 
-async fn websocket(
-    ws: WebSocketUpgrade,
-    State(app): State<AppState>,
-) -> impl IntoResponse {
+async fn websocket(ws: WebSocketUpgrade, State(app): State<AppState>) -> impl IntoResponse {
     ws.on_upgrade(move |socket| handle_socket(socket, app))
 }
 

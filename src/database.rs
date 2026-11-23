@@ -142,7 +142,10 @@ impl Database {
         }
     }
 
-    pub async fn history(&self, filter: HistoryFilter) -> Result<Vec<DetectionRecord>, DatabaseError> {
+    pub async fn history(
+        &self,
+        filter: HistoryFilter,
+    ) -> Result<Vec<DetectionRecord>, DatabaseError> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.tx
             .try_send(DbCommand::Query {
@@ -304,7 +307,9 @@ fn query_records(
     values.push(Value::Integer(i64::from(filter.limit.clamp(1, 1_000))));
     values.push(Value::Integer(i64::from(filter.offset)));
 
-    let mut statement = connection.prepare(&sql).map_err(|error| error.to_string())?;
+    let mut statement = connection
+        .prepare(&sql)
+        .map_err(|error| error.to_string())?;
     let rows = statement
         .query_map(params_from_iter(values.iter()), map_record)
         .map_err(|error| error.to_string())?;
@@ -318,11 +323,7 @@ fn query_records(
 fn map_record(row: &Row<'_>) -> rusqlite::Result<DetectionRecord> {
     let class_name: String = row.get(3)?;
     let class = DetectedClass::from_name(&class_name).ok_or_else(|| {
-        rusqlite::Error::InvalidColumnType(
-            3,
-            "class".to_string(),
-            rusqlite::types::Type::Text,
-        )
+        rusqlite::Error::InvalidColumnType(3, "class".to_string(), rusqlite::types::Type::Text)
     })?;
     Ok(DetectionRecord {
         id: row.get(0)?,
@@ -386,9 +387,13 @@ mod tests {
     async fn inserts_and_filters_records() {
         let dir = tempdir().unwrap();
         let db = Database::open(&dir.path().join("test.sqlite3")).unwrap();
-        db.insert(record(DetectedClass::Person, 1_000)).await.unwrap();
+        db.insert(record(DetectedClass::Person, 1_000))
+            .await
+            .unwrap();
         db.insert(record(DetectedClass::Car, 2_000)).await.unwrap();
-        db.insert(record(DetectedClass::Person, 3_000)).await.unwrap();
+        db.insert(record(DetectedClass::Person, 3_000))
+            .await
+            .unwrap();
 
         let all = db
             .history(HistoryFilter {
@@ -409,7 +414,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(people.len(), 2);
-        assert!(people.iter().all(|record| record.class == DetectedClass::Person));
+        assert!(people
+            .iter()
+            .all(|record| record.class == DetectedClass::Person));
 
         let window = db
             .history(HistoryFilter {

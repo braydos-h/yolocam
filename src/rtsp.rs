@@ -81,7 +81,7 @@ impl MjpegParser {
     }
 }
 
-pub fn ffmpeg_args(url: &Url, preview_width: u32) -> Vec<String> {
+pub fn ffmpeg_args(url: &Url, preview_max_dimension: u32) -> Vec<String> {
     vec![
         "-hide_banner".to_string(),
         "-loglevel".to_string(),
@@ -89,7 +89,7 @@ pub fn ffmpeg_args(url: &Url, preview_width: u32) -> Vec<String> {
         "-nostdin".to_string(),
         "-rtsp_transport".to_string(),
         "tcp".to_string(),
-        "-rw_timeout".to_string(),
+        "-timeout".to_string(),
         "15000000".to_string(),
         "-analyzeduration".to_string(),
         "5000000".to_string(),
@@ -101,7 +101,9 @@ pub fn ffmpeg_args(url: &Url, preview_width: u32) -> Vec<String> {
         "0:v:0".to_string(),
         "-an".to_string(),
         "-vf".to_string(),
-        format!("scale=w=min({preview_width}\\,iw):h=-2"),
+        format!(
+            "scale=w=min({preview_max_dimension}\\,iw):h=min({preview_max_dimension}\\,ih):force_original_aspect_ratio=decrease"
+        ),
         "-f".to_string(),
         "mjpeg".to_string(),
         "-q:v".to_string(),
@@ -278,8 +280,10 @@ async fn run_camera_worker(app: AppState, token: CancellationToken) {
                     error = %message,
                     "RTSP stream stopped; scheduling reconnect"
                 );
+                let app_shutdown = app.shutdown_token();
                 tokio::select! {
                     _ = token.cancelled() => break,
+                    _ = app_shutdown.cancelled() => break,
                     _ = tokio::time::sleep(Duration::from_secs(wait_seconds)) => {}
                 }
             }
@@ -303,7 +307,7 @@ async fn stream_until_failure(
     secrets: &[String],
 ) -> StreamEnd {
     let mut command = Command::new(&camera.ffmpeg_path);
-    command.args(ffmpeg_args(effective_url, camera_preview_width(app)));
+    command.args(ffmpeg_args(effective_url, camera_preview_dimension(app)));
     command.stdin(Stdio::null());
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
@@ -314,10 +318,7 @@ async fn stream_until_failure(
         Ok(child) => child,
         Err(error) => {
             return StreamEnd::Failed {
-                message: format!(
-                    "Unable to start FFmpeg ({}) : {error}",
-                    camera.ffmpeg_path
-                ),
+                message: format!("Unable to start FFmpeg ({}): {error}", camera.ffmpeg_path),
                 had_frames: false,
             };
         }
@@ -342,10 +343,18 @@ async fn stream_until_failure(
     let mut parser = MjpegParser::new();
     let mut read_buffer = BytesMut::with_capacity(256 * 1024);
     let mut had_frames = false;
+    let app_shutdown = app.shutdown_token();
 
     loop {
         tokio::select! {
             _ = token.cancelled() => {
+                terminate_child(&mut child).await;
+                if let Some(task) = stderr_task {
+                    task.abort();
+                }
+                return StreamEnd::Cancelled;
+            }
+            _ = app_shutdown.cancelled() => {
                 terminate_child(&mut child).await;
                 if let Some(task) = stderr_task {
                     task.abort();
@@ -375,11 +384,11 @@ async fn stream_until_failure(
                         parser.push(&read_buffer[..n]);
                         read_buffer.clear();
                         while let Some(frame) = parser.next_frame() {
-                            app.frame_store().publish(frame);
                             if !had_frames {
                                 had_frames = true;
                                 app.set_camera_status(CameraStatus::streaming());
                             }
+                            app.frame_store().publish(frame);
                         }
                     }
                     Err(error) => {
@@ -401,8 +410,8 @@ async fn stream_until_failure(
     }
 }
 
-fn camera_preview_width(app: &AppState) -> u32 {
-    app.config().preview_width()
+fn camera_preview_dimension(app: &AppState) -> u32 {
+    app.config().preview_max_dimension()
 }
 
 async fn read_stderr(
@@ -430,9 +439,7 @@ async fn read_stderr(
     lines
 }
 
-async fn collect_stderr(
-    task: Option<JoinHandle<VecDeque<String>>>,
-) -> VecDeque<String> {
+async fn collect_stderr(task: Option<JoinHandle<VecDeque<String>>>) -> VecDeque<String> {
     let Some(task) = task else {
         return VecDeque::new();
     };
@@ -532,6 +539,7 @@ mod tests {
         assert!(joined.contains("-f mjpeg"));
         assert!(joined.contains("pipe:1"));
         assert!(args.iter().any(|arg| arg.contains("min(1280")));
+        assert!(joined.contains("force_original_aspect_ratio=decrease"));
     }
 
     #[test]
@@ -541,7 +549,8 @@ mod tests {
             "user".to_string(),
             "pass".to_string(),
         ];
-        let message = "401 Unauthorized for rtsp://user:pass@example.test/stream by user using pass";
+        let message =
+            "401 Unauthorized for rtsp://user:pass@example.test/stream by user using pass";
         let redacted = redact_secrets(message, &secrets);
         assert!(!redacted.contains("user"));
         assert!(!redacted.contains("pass"));

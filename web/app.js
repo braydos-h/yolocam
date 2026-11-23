@@ -418,6 +418,9 @@
       box.style.height = `${clampPercent(bbox.h) * 100}%`;
       const label = document.createElement("span");
       label.className = "detection-label";
+      if (Number(bbox.x) + Number(bbox.w) > 0.78) {
+        label.classList.add("label-right");
+      }
       label.textContent = `${detection.class === "car" ? "Car" : "Person"} ${Math.round(Number(detection.confidence) * 100)}%`;
       box.appendChild(label);
       fragment.appendChild(box);
@@ -524,7 +527,7 @@
       params.set("limit", "100");
       const data = await api(`/api/history?${params.toString()}`);
       renderHistory(data.items || []);
-      els.historyCount.textContent = `${(data.items || []).length} event${(data.items || []).length === 1 ? "" : "s"}`;
+      els.historyCount.textContent = `${(data.items || []).length} shown`;
     } catch (error) {
       if (!quiet) {
         showToast(error.message, "error");

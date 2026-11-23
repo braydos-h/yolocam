@@ -260,7 +260,11 @@ pub fn save_screenshot(
     let mut path = PathBuf::new();
     let mut filename = String::new();
     for _ in 0..1_000 {
-        filename = format!("{}_{}.jpg", safe_name, stamp.format("%Y-%m-%d_%H-%M-%S-%3f"));
+        filename = format!(
+            "{}_{}.jpg",
+            safe_name,
+            stamp.format("%Y-%m-%d_%H-%M-%S-%3f")
+        );
         path = directory.join(&filename);
         if !path.exists() {
             break;
@@ -317,7 +321,10 @@ pub fn sanitize_camera_name(name: &str) -> String {
 
 /// Delete only files matching the app's generated screenshot naming scheme
 /// and older than the retention window. Unrelated files are left alone.
-pub fn cleanup_screenshots(directory: &Path, retention_days: u32) -> Result<usize, ScreenshotError> {
+pub fn cleanup_screenshots(
+    directory: &Path,
+    retention_days: u32,
+) -> Result<usize, ScreenshotError> {
     if !directory.exists() {
         return Ok(0);
     }
@@ -391,11 +398,7 @@ fn is_date_part(value: &str) -> bool {
 fn is_time_part(value: &str) -> bool {
     let bytes = value.as_bytes();
     // HH-MM-SS-mmm
-    if bytes.len() != 12
-        || bytes[2] != b'-'
-        || bytes[5] != b'-'
-        || bytes[8] != b'-'
-    {
+    if bytes.len() != 12 || bytes[2] != b'-' || bytes[5] != b'-' || bytes[8] != b'-' {
         return false;
     }
     let Some(hour) = parse_digits(&value[0..2]) else {
@@ -488,14 +491,7 @@ fn fill_rect(image: &mut RgbImage, (x, y, width, height): (i32, i32, u32, u32), 
     }
 }
 
-fn draw_text(
-    image: &mut RgbImage,
-    x: i32,
-    y: i32,
-    text: &str,
-    color: Rgb<u8>,
-    scale: u32,
-) {
+fn draw_text(image: &mut RgbImage, x: i32, y: i32, text: &str, color: Rgb<u8>, scale: u32) {
     let mut cursor_x = x;
     for character in text.chars() {
         let Some(glyph) = BASIC_FONTS.get(character) else {

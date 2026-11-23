@@ -9,7 +9,7 @@ use ort::value::{Tensor, TensorElementType, ValueType};
 use thiserror::Error;
 
 use crate::config::{InferenceDevice, YoloConfig};
-use crate::detection::{iou, BBox, ClassFilter, Detection, DetectedClass};
+use crate::detection::{iou, BBox, ClassFilter, DetectedClass, Detection};
 
 pub const NMS_IOU_THRESHOLD: f32 = 0.45;
 const LETTERBOX_PADDING: u8 = 114;
@@ -51,25 +51,24 @@ impl YoloEngine {
         }
 
         let runtime_path = resolve_onnxruntime_path(config)?;
-        let mut environment_builder = ort::init_from(&runtime_path).map_err(|error| {
-            YoloError::RuntimeLoad {
+        let mut environment_builder =
+            ort::init_from(&runtime_path).map_err(|error| YoloError::RuntimeLoad {
                 path: runtime_path.display().to_string(),
                 message: error.to_string(),
-            }
-        })?;
+            })?;
         environment_builder = environment_builder.with_telemetry(false);
 
         #[cfg(feature = "cuda")]
         if config.device == InferenceDevice::Cuda {
-            environment_builder = environment_builder.with_execution_providers([
-                ort::ep::CUDA::default().build().error_on_failure(),
-            ]);
+            environment_builder = environment_builder
+                .with_execution_providers([ort::ep::CUDA::default().build().error_on_failure()]);
         }
         #[cfg(all(feature = "directml", target_os = "windows"))]
         if config.device == InferenceDevice::DirectMl {
-            environment_builder = environment_builder.with_execution_providers([
-                ort::ep::DirectML::default().build().error_on_failure(),
-            ]);
+            environment_builder =
+                environment_builder.with_execution_providers([ort::ep::DirectML::default()
+                    .build()
+                    .error_on_failure()]);
         }
         if config.device == InferenceDevice::Cuda && !cfg!(feature = "cuda") {
             return Err(YoloError::UnsupportedDevice(
@@ -109,6 +108,16 @@ impl YoloEngine {
             .ok_or_else(|| YoloError::InvalidModel("model has no inputs".into()))?;
         let input_name = input.name().to_string();
         let (input_width, input_height) = match input.dtype() {
+            ValueType::Tensor {
+                ty: TensorElementType::Float16,
+                shape,
+                ..
+            } => {
+                return Err(YoloError::InvalidModel(format!(
+                    "model input {} uses float16; export a float32 ONNX model (Ultralytics: half=False, dynamic=False)",
+                    shape
+                )));
+            }
             ValueType::Tensor {
                 ty: TensorElementType::Float32,
                 shape,
@@ -174,8 +183,11 @@ impl YoloEngine {
         filter: ClassFilter,
     ) -> Result<Vec<Detection>, YoloError> {
         let (tensor_data, letterbox) = preprocess(image, self.input_width, self.input_height);
-        let tensor = Tensor::from_array((vec![1_i64, 3, self.input_height as i64, self.input_width as i64], tensor_data))
-            .map_err(|error| YoloError::Inference(error.to_string()))?;
+        let tensor = Tensor::from_array((
+            vec![1_i64, 3, self.input_height as i64, self.input_width as i64],
+            tensor_data,
+        ))
+        .map_err(|error| YoloError::Inference(error.to_string()))?;
         let outputs = self
             .session
             .run(ort::inputs![self.input_name.as_str() => tensor])
@@ -336,12 +348,9 @@ pub fn preprocess(image: &RgbImage, target_w: u32, target_h: u32) -> (Vec<f32>, 
     assert!(target_w > 0 && target_h > 0);
     let source_w = image.width();
     let source_h = image.height();
-    let scale = (target_w as f32 / source_w as f32)
-        .min(target_h as f32 / source_h as f32);
-    let resized_w = ((source_w as f32 * scale).round() as u32)
-        .clamp(1, target_w);
-    let resized_h = ((source_h as f32 * scale).round() as u32)
-        .clamp(1, target_h);
+    let scale = (target_w as f32 / source_w as f32).min(target_h as f32 / source_h as f32);
+    let resized_w = ((source_w as f32 * scale).round() as u32).clamp(1, target_w);
+    let resized_h = ((source_h as f32 * scale).round() as u32).clamp(1, target_h);
     let pad_x = (target_w - resized_w) / 2;
     let pad_y = (target_h - resized_h) / 2;
     let resized = image::imageops::resize(image, resized_w, resized_h, FilterType::Triangle);
@@ -375,14 +384,8 @@ pub fn preprocess(image: &RgbImage, target_w: u32, target_h: u32) -> (Vec<f32>, 
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OutputLayout {
-    ChannelMajor {
-        channels: usize,
-        anchors: usize,
-    },
-    AnchorMajor {
-        channels: usize,
-        anchors: usize,
-    },
+    ChannelMajor { channels: usize, anchors: usize },
+    AnchorMajor { channels: usize, anchors: usize },
 }
 
 impl OutputLayout {
@@ -541,12 +544,12 @@ mod tests {
         let anchors = 8400usize;
         let mut data = vec![0f32; channels * anchors];
         for (anchor, cx, cy, w, h, person, car) in entries {
-            data[0 * anchors + anchor] = *cx;
-            data[1 * anchors + anchor] = *cy;
-            data[2 * anchors + anchor] = *w;
-            data[3 * anchors + anchor] = *h;
-            data[(4 + COCO_PERSON_INDEX) * anchors + anchor] = *person;
-            data[(4 + COCO_CAR_INDEX) * anchors + anchor] = *car;
+            data[*anchor] = *cx;
+            data[anchors + *anchor] = *cy;
+            data[2 * anchors + *anchor] = *w;
+            data[3 * anchors + *anchor] = *h;
+            data[(4 + COCO_PERSON_INDEX) * anchors + *anchor] = *person;
+            data[(4 + COCO_CAR_INDEX) * anchors + *anchor] = *car;
         }
         data
     }
@@ -595,8 +598,8 @@ mod tests {
             detect_person: true,
             detect_car: true,
         };
-        let detections = decode_yolo_output(&data, &[1, 84, 8400], &identity_letterbox(), filter)
-            .unwrap();
+        let detections =
+            decode_yolo_output(&data, &[1, 84, 8400], &identity_letterbox(), filter).unwrap();
         assert_eq!(detections.len(), 1);
         assert_eq!(detections[0].class, DetectedClass::Person);
         assert!((detections[0].confidence - 0.91).abs() < 1e-6);
@@ -630,9 +633,11 @@ mod tests {
             detect_car: false,
             ..filter
         };
-        assert!(decode_yolo_output(&data, &[1, 8400, 84], &identity_letterbox(), person_only)
-            .unwrap()
-            .is_empty());
+        assert!(
+            decode_yolo_output(&data, &[1, 8400, 84], &identity_letterbox(), person_only)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -695,8 +700,8 @@ mod tests {
             detect_person: true,
             detect_car: true,
         };
-        let detections = decode_yolo_output(&data, &[1, 84, 8400], &identity_letterbox(), filter)
-            .unwrap();
+        let detections =
+            decode_yolo_output(&data, &[1, 84, 8400], &identity_letterbox(), filter).unwrap();
         assert_eq!(detections.len(), 1);
         assert!((detections[0].confidence - 0.51).abs() < 1e-6);
     }
@@ -707,8 +712,8 @@ mod tests {
         let channels = 85usize;
         let mut data = vec![0f32; channels * anchors];
         let anchor = 0usize;
-        data[0 * anchors + anchor] = 320.0;
-        data[1 * anchors + anchor] = 320.0;
+        data[anchor] = 320.0;
+        data[anchors + anchor] = 320.0;
         data[2 * anchors + anchor] = 80.0;
         data[3 * anchors + anchor] = 80.0;
         data[4 * anchors + anchor] = 0.9;
@@ -718,8 +723,8 @@ mod tests {
             detect_person: true,
             detect_car: true,
         };
-        let detections = decode_yolo_output(&data, &[1, 85, 100], &identity_letterbox(), filter)
-            .unwrap();
+        let detections =
+            decode_yolo_output(&data, &[1, 85, 100], &identity_letterbox(), filter).unwrap();
         assert_eq!(detections.len(), 1);
         assert_eq!(detections[0].class, DetectedClass::Car);
         assert!((detections[0].confidence - 0.855).abs() < 1e-5);

@@ -62,13 +62,13 @@ pub async fn mjpeg_stream(State(app): State<AppState>) -> Response {
         header::CONTENT_TYPE,
         HeaderValue::from_static("multipart/x-mixed-replace; boundary=frame"),
     );
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store, no-cache"),
+    );
     response
         .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store, no-cache"));
-    response.headers_mut().insert(
-        header::CONNECTION,
-        HeaderValue::from_static("keep-alive"),
-    );
+        .insert(header::CONNECTION, HeaderValue::from_static("keep-alive"));
     response.headers_mut().insert(
         header::HeaderName::from_static("x-accel-buffering"),
         HeaderValue::from_static("no"),
@@ -90,20 +90,17 @@ fn encode_part(jpeg: &Bytes, last_sent: &mut Option<Instant>) -> Option<Bytes> {
 }
 
 fn mjpeg_header(content_length: usize) -> Vec<u8> {
-    format!(
-        "--{BOUNDARY}\r\nContent-Type: image/jpeg\r\nContent-Length: {content_length}\r\n\r\n"
-    )
-    .into_bytes()
+    format!("--{BOUNDARY}\r\nContent-Type: image/jpeg\r\nContent-Length: {content_length}\r\n\r\n")
+        .into_bytes()
 }
 
 pub async fn latest_jpeg(State(app): State<AppState>) -> Response {
     match app.frame_store().latest() {
         Some(frame) => {
             let mut response = Response::new(Body::from(frame.jpeg.clone()));
-            response.headers_mut().insert(
-                header::CONTENT_TYPE,
-                HeaderValue::from_static("image/jpeg"),
-            );
+            response
+                .headers_mut()
+                .insert(header::CONTENT_TYPE, HeaderValue::from_static("image/jpeg"));
             response.headers_mut().insert(
                 header::CACHE_CONTROL,
                 HeaderValue::from_static("no-store, no-cache"),

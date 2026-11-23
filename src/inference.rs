@@ -159,7 +159,7 @@ fn run_worker(app: AppState, stop: Arc<AtomicBool>) {
             }
             Err(error) => {
                 consecutive_errors = consecutive_errors.saturating_add(1);
-                if consecutive_errors == 1 || consecutive_errors % 10 == 0 {
+                if consecutive_errors == 1 || consecutive_errors.is_multiple_of(10) {
                     tracing::warn!(error = %error, consecutive_errors, "analysis failed");
                 }
                 refresh_ready_status(

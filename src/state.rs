@@ -207,10 +207,7 @@ impl AppState {
         database: Database,
         stored_counts: StoredCounts,
     ) -> Self {
-        let ai = AiStatus::loading(
-            config.yolo.model_path.clone(),
-            config.yolo.device,
-        );
+        let ai = AiStatus::loading(config.yolo.model_path.clone(), config.yolo.device);
         let (events, _) = broadcast::channel(64);
         let inner = Arc::new(AppInner {
             config: RwLock::new(config),
