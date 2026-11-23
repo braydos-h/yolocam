@@ -1,0 +1,33 @@
+# YOLOCam configuration
+#
+# Credentials can be embedded in the RTSP URL, but they are never returned by
+# the HTTP API or written to logs. For deployments prefer environment variables:
+#   YOLOCAM_RTSP_URL / YOLOCAM_RTSP_USERNAME / YOLOCAM_RTSP_PASSWORD
+# Environment-provided camera credentials are never written back to this file.
+
+[camera]
+name = "Front Camera"
+rtsp_url = "rtsp://192.168.1.100:554/stream1"
+# username = "camera-user"       # optional; prefer YOLOCAM_RTSP_USERNAME
+# password = "camera-password"   # optional; prefer YOLOCAM_RTSP_PASSWORD
+reconnect_delay_seconds = 5
+ffmpeg_path = "ffmpeg"
+
+[yolo]
+model_path = "models/yolo11n.onnx"
+confidence_threshold = 0.50
+interval_ms = 1000
+detect_person = true
+detect_car = true
+device = "cpu"                   # "cpu", "cuda", or "directml" (compile feature required)
+# onnxruntime_path = "onnxruntime.dll"  # optional; auto-detected if omitted
+
+[storage]
+save_screenshots = true
+screenshot_directory = "./detections"
+retention_days = 7
+database_path = "./yolocam.sqlite3"
+
+[server]
+host = "127.0.0.1"
+port = 8080

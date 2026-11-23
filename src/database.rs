@@ -221,7 +221,9 @@ fn run_worker(connection: &mut Connection, rx: mpsc::Receiver<DbCommand>) {
     while let Ok(command) = rx.recv() {
         match command {
             DbCommand::Insert { record, ack } => {
-                let result = insert_record(connection, &record).map(|_| ());
+                let result = insert_record(connection, &record)
+                    .map(|_| ())
+                    .map_err(|error| error.to_string());
                 if let Err(error) = &result {
                     tracing::error!(error = %error, "failed to insert detection event");
                 }

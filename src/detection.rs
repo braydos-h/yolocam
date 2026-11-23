@@ -192,7 +192,10 @@ pub fn render_annotated(
         let padding = 3;
         let text_width = label.chars().count() as u32 * glyph_size + padding * 2;
         let text_height = glyph_size + padding * 2;
-        let label_x = rect.0.min(canvas.width().saturating_sub(text_width)) as i32;
+        let label_x = rect
+            .0
+            .max(0)
+            .min(canvas.width().saturating_sub(text_width) as i32);
         let label_y = if rect.1 >= text_height as i32 {
             rect.1 - text_height as i32
         } else {
@@ -222,9 +225,10 @@ pub fn render_annotated(
     let glyph_size = 8 * header_scale;
     let padding = 4;
     let header_height = glyph_size + padding * 2;
+    let canvas_width = canvas.width();
     fill_rect(
         &mut canvas,
-        (0, 0, canvas.width(), header_height),
+        (0, 0, canvas_width, header_height),
         Rgb([8, 12, 20]),
     );
     draw_text(
@@ -369,25 +373,51 @@ pub fn is_managed_screenshot(filename: &str) -> bool {
 
 fn is_date_part(value: &str) -> bool {
     let bytes = value.as_bytes();
-    bytes.len() == 10
-        && bytes[4] == b'-'
-        && bytes[7] == b'-'
-        && bytes
-            .iter()
-            .enumerate()
-            .all(|(index, byte)| index == 4 || index == 7 || byte.is_ascii_digit())
+    if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
+        return false;
+    }
+    let Some(year) = parse_digits(&value[0..4]) else {
+        return false;
+    };
+    let Some(month) = parse_digits(&value[5..7]) else {
+        return false;
+    };
+    let Some(day) = parse_digits(&value[8..10]) else {
+        return false;
+    };
+    (1..=9999).contains(&year) && (1..=12).contains(&month) && (1..=31).contains(&day)
 }
 
 fn is_time_part(value: &str) -> bool {
     let bytes = value.as_bytes();
     // HH-MM-SS-mmm
-    bytes.len() == 12
-        && bytes[2] == b'-'
-        && bytes[5] == b'-'
-        && bytes[8] == b'-'
-        && bytes.iter().enumerate().all(|(index, byte)| {
-            index == 2 || index == 5 || index == 8 || byte.is_ascii_digit()
-        })
+    if bytes.len() != 12
+        || bytes[2] != b'-'
+        || bytes[5] != b'-'
+        || bytes[8] != b'-'
+    {
+        return false;
+    }
+    let Some(hour) = parse_digits(&value[0..2]) else {
+        return false;
+    };
+    let Some(minute) = parse_digits(&value[3..5]) else {
+        return false;
+    };
+    let Some(second) = parse_digits(&value[6..8]) else {
+        return false;
+    };
+    let Some(millis) = parse_digits(&value[9..12]) else {
+        return false;
+    };
+    hour <= 23 && minute <= 59 && second <= 59 && millis <= 999
+}
+
+fn parse_digits(value: &str) -> Option<u32> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    value.parse().ok()
 }
 
 fn pixel_rect(image: &RgbImage, bbox: BBox) -> (i32, i32, u32, u32) {
@@ -474,7 +504,7 @@ fn draw_text(
         };
         for (row, bits) in glyph.iter().enumerate() {
             for col in 0..8u32 {
-                if bits & (1 << col) != 0 {
+                if *bits & (1 << col) != 0 {
                     for sy in 0..scale {
                         for sx in 0..scale {
                             let px = cursor_x + (col * scale + sx) as i32;

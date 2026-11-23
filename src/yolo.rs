@@ -400,8 +400,8 @@ impl OutputLayout {
 
     fn get(self, data: &[f32], anchor: usize, channel: usize) -> f32 {
         match self {
-            Self::ChannelMajor { channels, .. } => data[channel * self.anchors() + anchor],
-            Self::AnchorMajor { .. } => data[anchor * channels + channel],
+            Self::ChannelMajor { .. } => data[channel * self.anchors() + anchor],
+            Self::AnchorMajor { .. } => data[anchor * self.channels() + channel],
         }
     }
 }
@@ -519,7 +519,6 @@ pub fn non_max_suppression(mut detections: Vec<Detection>, iou_threshold: f32) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use image::Rgb;
 
     fn identity_letterbox() -> Letterbox {
         Letterbox {

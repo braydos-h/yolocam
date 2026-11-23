@@ -18,10 +18,14 @@ const BOUNDARY: &str = "frame";
 pub async fn mjpeg_stream(State(app): State<AppState>) -> Response {
     let stream = async_stream::stream! {
         let mut receiver = app.frame_store().subscribe();
-        let mut shutdown = app.shutdown_token();
+        let shutdown = app.shutdown_token();
         let mut last_sent: Option<Instant> = None;
 
-        if let Some(frame) = receiver.borrow().clone() {
+        let initial = {
+            let value = receiver.borrow();
+            (*value).clone()
+        };
+        if let Some(frame) = initial {
             if let Some(header) = encode_part(&frame.jpeg, &mut last_sent) {
                 yield Ok::<Bytes, Infallible>(header);
                 yield Ok(frame.jpeg.clone());
@@ -36,7 +40,10 @@ pub async fn mjpeg_stream(State(app): State<AppState>) -> Response {
                     if changed.is_err() {
                         break;
                     }
-                    let frame = receiver.borrow_and_update().clone();
+                    let frame = {
+                        let value = receiver.borrow_and_update();
+                        (*value).clone()
+                    };
                     let Some(frame) = frame else {
                         continue;
                     };
@@ -69,8 +76,8 @@ pub async fn mjpeg_stream(State(app): State<AppState>) -> Response {
     response
 }
 
-/// Also yield the JPEG body itself. Kept separate from the header to avoid
-/// copying the JPEG bytes on every client.
+/// Build the multipart header for a JPEG and enforce a smooth preview frame
+/// rate. The JPEG bytes themselves are yielded separately to avoid copying.
 fn encode_part(jpeg: &Bytes, last_sent: &mut Option<Instant>) -> Option<Bytes> {
     let now = Instant::now();
     if let Some(last) = *last_sent {
@@ -88,10 +95,6 @@ fn mjpeg_header(content_length: usize) -> Vec<u8> {
     )
     .into_bytes()
 }
-
-/// Also yield the JPEG body itself. Kept separate from the header to avoid
-/// copying the JPEG bytes on every client.
-async fn yield_frame() {}
 
 pub async fn latest_jpeg(State(app): State<AppState>) -> Response {
     match app.frame_store().latest() {
