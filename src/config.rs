@@ -24,6 +24,23 @@ pub enum ConfigError {
     Invalid(String),
 }
 
+impl ConfigError {
+    /// A message safe to log. TOML parse errors can contain a source snippet
+    /// that includes RTSP credentials or password fields, so only the first
+    /// line (which has the line/column position) is retained.
+    pub fn safe_message(&self) -> String {
+        match self {
+            Self::Parse(error) => error
+                .to_string()
+                .lines()
+                .next()
+                .unwrap_or("invalid TOML")
+                .to_string(),
+            other => other.to_string(),
+        }
+    }
+}
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -1080,5 +1097,17 @@ port = 8080
         assert!(!debug.contains("alice"));
         assert!(!debug.contains("s3cret"));
         assert!(!debug.contains("s3cret@"));
+    }
+
+    #[test]
+    fn parse_errors_do_not_log_source_secrets() {
+        let broken = r#"
+[camera]
+rtsp_url = "rtsp://alice:s3cret@192.168.1.100/stream
+"#;
+        let error = Config::from_toml(broken).unwrap_err();
+        let message = error.safe_message();
+        assert!(!message.contains("alice"), "{message}");
+        assert!(!message.contains("s3cret"), "{message}");
     }
 }

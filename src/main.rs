@@ -6,7 +6,7 @@ use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
 use yolocam::config::Config;
-use yolocam::database::{Database, StoredCounts};
+use yolocam::database::{Database, HistoryFilter, StoredCounts};
 use yolocam::detection::cleanup_screenshots;
 use yolocam::inference::InferenceWorker;
 use yolocam::rtsp::probe_ffmpeg;
@@ -36,8 +36,13 @@ fn init_tracing() {
 
 async fn run() -> Result<(), String> {
     let config_path = parse_args()?;
-    let config = Config::load(&config_path)
-        .map_err(|error| format!("cannot load {}: {error}", config_path.display()))?;
+    let config = Config::load(&config_path).map_err(|error| {
+        format!(
+            "cannot load {}: {}",
+            config_path.display(),
+            error.safe_message()
+        )
+    })?;
 
     let camera_url = config
         .public_rtsp_url()
@@ -86,6 +91,19 @@ async fn run() -> Result<(), String> {
         tracing::warn!(error = %error, "cannot read stored detection totals; starting at zero");
         StoredCounts::default()
     });
+    let last_detection_at = match database
+        .history(HistoryFilter {
+            limit: 1,
+            ..Default::default()
+        })
+        .await
+    {
+        Ok(records) => records.first().map(|record| record.timestamp.clone()),
+        Err(error) => {
+            tracing::warn!(error = %error, "cannot read the last detection timestamp");
+            None
+        }
+    };
     tracing::info!(
         database = %database_path.display(),
         people_events = stored_counts.people,
@@ -93,7 +111,13 @@ async fn run() -> Result<(), String> {
         "detection database ready"
     );
 
-    let app = AppState::new(config.clone(), config_path, database, stored_counts);
+    let app = AppState::new(
+        config.clone(),
+        config_path,
+        database,
+        stored_counts,
+        last_detection_at,
+    );
 
     let bind_address = config.server.bind_address();
     let listener = match TcpListener::bind(&bind_address).await {

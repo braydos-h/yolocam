@@ -206,6 +206,7 @@ impl AppState {
         config_path: PathBuf,
         database: Database,
         stored_counts: StoredCounts,
+        last_detection_at: Option<String>,
     ) -> Self {
         let ai = AiStatus::loading(config.yolo.model_path.clone(), config.yolo.device);
         let (events, _) = broadcast::channel(64);
@@ -216,7 +217,7 @@ impl AppState {
             camera_status: RwLock::new(CameraStatus::stopped()),
             analysis: RwLock::new(None),
             ai: RwLock::new(ai),
-            last_detection_at: RwLock::new(None),
+            last_detection_at: RwLock::new(last_detection_at),
             people_events: AtomicU64::new(stored_counts.people),
             car_events: AtomicU64::new(stored_counts.cars),
             database,
