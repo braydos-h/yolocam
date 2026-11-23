@@ -84,17 +84,19 @@ fn run_worker(app: AppState, stop: Arc<AtomicBool>) {
     };
 
     let (input_width, input_height) = engine.input_size();
+    let loaded_model_path = config.yolo.model_path.clone();
+    let loaded_device = config.yolo.device;
     tracing::info!(
         input_width,
         input_height,
-        device = config.yolo.device.as_str(),
+        device = loaded_device.as_str(),
         "YOLO model ready"
     );
     app.set_ai_status(AiStatus {
         state: AiState::Ready,
         message: None,
-        model_path: config.yolo.model_path.clone(),
-        device: config.yolo.device,
+        model_path: loaded_model_path.clone(),
+        device: loaded_device,
         input_width: Some(input_width),
         input_height: Some(input_height),
     });
@@ -142,7 +144,14 @@ fn run_worker(app: AppState, stop: Arc<AtomicBool>) {
                     .as_deref()
                     .is_some_and(|message| message.starts_with("inference failed"))
                 {
-                    refresh_ready_status(&app, &config, input_width, input_height, None);
+                    refresh_ready_status(
+                        &app,
+                        &loaded_model_path,
+                        loaded_device,
+                        input_width,
+                        input_height,
+                        None,
+                    );
                 }
             }
             Ok(None) => {
@@ -155,7 +164,8 @@ fn run_worker(app: AppState, stop: Arc<AtomicBool>) {
                 }
                 refresh_ready_status(
                     &app,
-                    &config,
+                    &loaded_model_path,
+                    loaded_device,
                     input_width,
                     input_height,
                     Some(format!("inference failed: {error}")),
@@ -199,7 +209,6 @@ fn analyze_frame(
     let analyzed_at = Utc::now();
     let timestamp = analyzed_at.to_rfc3339_opts(SecondsFormat::Millis, true);
     let screenshot = save_frame_screenshot(
-        app,
         config,
         &image,
         &detections,
@@ -232,7 +241,6 @@ fn analyze_frame(
 }
 
 fn save_frame_screenshot(
-    app: &AppState,
     config: &crate::config::Config,
     image: &image::RgbImage,
     detections: &[Detection],
@@ -264,7 +272,6 @@ fn save_frame_screenshot(
                 );
                 *last_log = Some(now);
             }
-            let _ = app;
             None
         }
     }
@@ -297,7 +304,8 @@ fn enqueue_detection_events(
 
 fn refresh_ready_status(
     app: &AppState,
-    config: &crate::config::Config,
+    loaded_model_path: &str,
+    loaded_device: InferenceDevice,
     input_width: u32,
     input_height: u32,
     message: Option<String>,
@@ -307,14 +315,16 @@ fn refresh_ready_status(
         && current.state == AiState::Ready
         && current.input_width == Some(input_width)
         && current.input_height == Some(input_height)
+        && current.model_path == loaded_model_path
+        && current.device == loaded_device
     {
         return;
     }
     app.set_ai_status(AiStatus {
         state: AiState::Ready,
         message,
-        model_path: config.yolo.model_path.clone(),
-        device: config.yolo.device,
+        model_path: loaded_model_path.to_string(),
+        device: loaded_device,
         input_width: Some(input_width),
         input_height: Some(input_height),
     });
@@ -330,9 +340,4 @@ fn sleep_interruptible(stop: &AtomicBool, duration: Duration) {
         let remaining = (deadline - now).min(Duration::from_millis(50));
         std::thread::sleep(remaining);
     }
-}
-
-#[allow(dead_code)]
-fn format_device(device: InferenceDevice) -> &'static str {
-    device.as_str()
 }
