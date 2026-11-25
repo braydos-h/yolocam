@@ -53,6 +53,13 @@
     btnSaveSettings: $("btn-save-settings"),
     cameraNameInput: $("camera-name-input"),
     rtspUrl: $("rtsp-url"),
+    btnDiscover: $("btn-discover"),
+    discoverSubnet: $("discover-subnet"),
+    discoverPanel: $("discover-panel"),
+    discoverStatus: $("discover-status"),
+    discoverResults: $("discover-results"),
+    discoverNotes: $("discover-notes"),
+    btnDiscoverClose: $("btn-discover-close"),
     rtspUsername: $("rtsp-username"),
     rtspPassword: $("rtsp-password"),
     clearCredentials: $("clear-credentials"),
@@ -85,6 +92,7 @@
     historyBusy: false,
     toastTimer: null,
     actionBusy: false,
+    discoveryBusy: false,
   };
 
   const ACTIVE_STATES = new Set(["streaming", "connecting", "reconnecting"]);
@@ -97,6 +105,16 @@
     els.btnReconnect.addEventListener("click", () => cameraAction("reconnect"));
     els.btnFullscreen.addEventListener("click", toggleFullscreen);
     els.btnRebenchmark.addEventListener("click", rebenchmarkHardware);
+    els.btnDiscover.addEventListener("click", findCameras);
+    els.btnDiscoverClose.addEventListener("click", () => {
+      els.discoverPanel.classList.add("hidden");
+    });
+    els.discoverSubnet.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        findCameras();
+      }
+    });
     els.settingsForm.addEventListener("submit", saveSettings);
     els.historyFilters.addEventListener("submit", (event) => {
       event.preventDefault();
@@ -366,7 +384,8 @@
       els.placeholderCopy.textContent = `${message || "The stream stopped."}${retry}`.trim();
     } else if (status.state === "error") {
       els.placeholderTitle.textContent = "Camera error";
-      els.placeholderCopy.textContent = status.message || "Check the RTSP URL and credentials.";
+      els.placeholderCopy.textContent = status.message
+        || "Check the RTSP URL and credentials, or use Find cameras in Settings to scan the network.";
     } else if (status.state === "streaming") {
       els.placeholderTitle.textContent = "Waiting for video";
       els.placeholderCopy.textContent = "The camera is connected; waiting for the first decoded frame.";
@@ -704,6 +723,8 @@
     els.rtspUsername.disabled = envLocked;
     els.rtspPassword.disabled = envLocked;
     els.clearCredentials.disabled = envLocked;
+    els.btnDiscover.disabled = envLocked || state.discoveryBusy;
+    els.discoverSubnet.disabled = envLocked;
     els.settingsEnvNote.classList.toggle("hidden", !envLocked);
     els.credentialsHint.textContent = envLocked
       ? "RTSP URL and credentials are managed by environment variables. Only non-secret camera options can be changed here."
@@ -823,6 +844,144 @@
       showToast(error.message, "error");
     } finally {
       els.btnSaveSettings.disabled = false;
+    }
+  }
+
+  async function findCameras() {
+    if (state.discoveryBusy) {
+      return;
+    }
+    state.discoveryBusy = true;
+    els.btnDiscover.disabled = true;
+    els.discoverPanel.classList.remove("hidden");
+    els.discoverResults.replaceChildren();
+    els.discoverNotes.textContent = "";
+    els.discoverStatus.textContent = "Scanning the local network… this can take a few seconds.";
+
+    const params = new URLSearchParams();
+    const subnet = els.discoverSubnet.value.trim();
+    if (subnet) {
+      params.set("subnet", subnet);
+    }
+    try {
+      const query = params.toString();
+      const report = await api(`/api/discover${query ? `?${query}` : ""}`);
+      renderDiscovery(report);
+    } catch (error) {
+      els.discoverStatus.textContent = error.message;
+      showToast(error.message, "error");
+    } finally {
+      state.discoveryBusy = false;
+      const envLocked = Boolean(state.settings && state.settings.camera && state.settings.camera.env_locked);
+      els.btnDiscover.disabled = envLocked;
+    }
+  }
+
+  function renderDiscovery(report) {
+    const streams = Array.isArray(report.streams) ? report.streams : [];
+    const subnets = Array.isArray(report.scanned_subnets) ? report.scanned_subnets : [];
+    const seconds = ((Number(report.duration_ms) || 0) / 1000).toFixed(1);
+    const location = subnets.length ? subnets.join(", ") : "the local network";
+    els.discoverStatus.textContent = streams.length
+      ? `${streams.length} stream${streams.length === 1 ? "" : "s"} found on ${location} · ${report.hosts_scanned} hosts · ${seconds}s`
+      : `No RTSP streams found on ${location} · ${report.hosts_scanned} hosts · ${seconds}s`;
+
+    const notes = Array.isArray(report.notes) ? report.notes : [];
+    els.discoverNotes.textContent = notes.join(" ");
+
+    if (!streams.length) {
+      const item = document.createElement("li");
+      item.className = "discover-empty";
+      item.textContent = "Try a different subnet, or check that the camera is powered on and RTSP is enabled.";
+      els.discoverResults.appendChild(item);
+      return;
+    }
+
+    const fragment = document.createDocumentFragment();
+    for (const stream of streams) {
+      const item = document.createElement("li");
+      item.className = "discover-item";
+
+      const info = document.createElement("div");
+      info.className = "discover-info";
+
+      const title = document.createElement("div");
+      title.className = "discover-title";
+      const name = document.createElement("span");
+      name.textContent = stream.name || `RTSP camera ${stream.host}`;
+      title.appendChild(name);
+
+      const badges = document.createElement("span");
+      badges.className = "discover-badges";
+      badges.appendChild(discoveryBadge(
+        stream.auth_required ? "Login required" : "Verified",
+        stream.auth_required ? "warn" : "ok",
+      ));
+      if (stream.codec) {
+        badges.appendChild(discoveryBadge(stream.codec, "muted"));
+      }
+      if (stream.source === "onvif") {
+        badges.appendChild(discoveryBadge("ONVIF", "muted"));
+      } else if (stream.source === "ssdp") {
+        badges.appendChild(discoveryBadge("UPnP", "muted"));
+      }
+      title.appendChild(badges);
+      info.appendChild(title);
+
+      const url = document.createElement("code");
+      url.className = "discover-url";
+      url.textContent = stream.url;
+      info.appendChild(url);
+
+      const details = [];
+      if (stream.vendor) {
+        details.push(stream.vendor);
+      }
+      if (stream.model) {
+        details.push(stream.model);
+      }
+      if (stream.realm) {
+        details.push(`realm: ${stream.realm}`);
+      }
+      if (details.length) {
+        const meta = document.createElement("div");
+        meta.className = "discover-meta";
+        meta.textContent = details.join(" · ");
+        info.appendChild(meta);
+      }
+
+      item.appendChild(info);
+
+      const use = document.createElement("button");
+      use.className = "button small primary";
+      use.type = "button";
+      use.textContent = "Use stream";
+      use.addEventListener("click", () => useDiscoveredStream(stream));
+      item.appendChild(use);
+
+      fragment.appendChild(item);
+    }
+    els.discoverResults.replaceChildren(fragment);
+  }
+
+  function discoveryBadge(text, kind) {
+    const badge = document.createElement("span");
+    badge.className = `discover-badge${kind ? ` ${kind}` : ""}`;
+    badge.textContent = text;
+    return badge;
+  }
+
+  function useDiscoveredStream(stream) {
+    els.rtspUrl.value = stream.url;
+    if (!els.cameraNameInput.value.trim() && stream.name) {
+      els.cameraNameInput.value = stream.name;
+    }
+    if (stream.auth_required) {
+      els.rtspUsername.focus();
+      showToast("Login required: enter the camera username and password, then save settings.", "success");
+    } else {
+      els.rtspUrl.focus();
+      showToast("RTSP URL filled in. Save settings, then start the camera.", "success");
     }
   }
 

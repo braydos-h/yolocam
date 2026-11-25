@@ -48,6 +48,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/camera/reconnect", post(camera_reconnect))
         .route("/api/hardware", get(hardware))
         .route("/api/hardware/benchmark", post(run_hardware_benchmark))
+        .route("/api/discover", get(discover_cameras))
         .route("/ws", get(websocket))
         .fallback(not_found)
         .with_state(state)
@@ -117,6 +118,31 @@ async fn health(State(app): State<AppState>) -> Json<serde_json::Value> {
 
 async fn stats(State(app): State<AppState>) -> Json<crate::state::LiveSnapshot> {
     Json(app.snapshot())
+}
+
+#[derive(Debug, Deserialize)]
+struct DiscoverQuery {
+    subnet: Option<String>,
+    timeout_ms: Option<u64>,
+}
+
+async fn discover_cameras(
+    Query(query): Query<DiscoverQuery>,
+) -> Result<Json<crate::discovery::DiscoveryReport>, ApiError> {
+    let report = crate::discovery::discover(query.subnet.as_deref(), query.timeout_ms.unwrap_or(450))
+        .await
+        .map_err(|error| match error {
+            crate::discovery::DiscoveryError::Busy => ApiError::conflict(error.to_string()),
+            crate::discovery::DiscoveryError::Invalid(_) => ApiError::bad_request(error.to_string()),
+            crate::discovery::DiscoveryError::Internal(_) => ApiError::internal(error.to_string()),
+        })?;
+    tracing::info!(
+        hosts = report.hosts_scanned,
+        streams = report.streams.len(),
+        subnets = ?report.scanned_subnets,
+        "camera discovery finished"
+    );
+    Ok(Json(report))
 }
 
 async fn hardware(State(app): State<AppState>) -> Json<serde_json::Value> {

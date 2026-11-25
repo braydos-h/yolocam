@@ -1027,6 +1027,131 @@ label small {
   gap: 10px;
 }
 
+.discover-block {
+  margin-top: 10px;
+}
+
+.discover-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+
+.discover-controls input {
+  min-width: 0;
+  flex: 1;
+}
+
+.discover-panel {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: #0b0b0b;
+}
+
+.discover-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.discover-results {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 330px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.discover-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
+.discover-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.discover-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 0.8rem;
+  font-weight: 650;
+}
+
+.discover-badges {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.discover-badge {
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.64rem;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.discover-badge.ok {
+  color: var(--green);
+  border-color: rgba(74, 222, 128, 0.35);
+  background: var(--green-soft);
+}
+
+.discover-badge.warn {
+  color: var(--amber);
+  border-color: rgba(251, 191, 36, 0.35);
+  background: rgba(251, 191, 36, 0.08);
+}
+
+.discover-badge.muted {
+  color: var(--faint);
+}
+
+.discover-url {
+  display: block;
+  margin-top: 4px;
+  color: #dcdcdc;
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  overflow-wrap: anywhere;
+}
+
+.discover-meta {
+  margin-top: 4px;
+  color: var(--faint);
+  font-size: 0.7rem;
+}
+
+.discover-empty {
+  padding: 12px;
+  color: var(--faint);
+  font-size: 0.78rem;
+  text-align: center;
+}
+
 .auto-hardware {
   display: flex;
   align-items: flex-start;
