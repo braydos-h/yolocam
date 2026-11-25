@@ -32,6 +32,7 @@ fn model_loads_and_runs_on_a_generated_frame() {
         detect_car: true,
         device: InferenceDevice::Cpu,
         onnxruntime_path: None,
+        auto: Default::default(),
     };
     let mut engine = YoloEngine::load(&config).expect("load YOLO model");
     let (width, height) = engine.input_size();

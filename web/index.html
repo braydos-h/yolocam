@@ -143,6 +143,14 @@
               <dt>Detection interval</dt>
               <dd id="detection-interval" class="mono">1000 ms</dd>
             </div>
+            <div>
+              <dt>AI model</dt>
+              <dd id="ai-model" class="mono">—</dd>
+            </div>
+            <div>
+              <dt>Hardware test</dt>
+              <dd id="hardware-test" class="mono">—</dd>
+            </div>
           </dl>
         </section>
       </aside>
@@ -248,8 +256,16 @@
             <legend>YOLO AI</legend>
             <label>
               <span>ONNX model path</span>
-              <input id="model-path" type="text" spellcheck="false">
+              <input id="model-path" type="text" spellcheck="false" placeholder="auto or models/yolo11n.onnx">
+              <small>Use <code>auto</code> to pick a model from a one-time hardware test.</small>
             </label>
+            <div class="auto-hardware">
+              <div>
+                <span class="auto-hardware-title">Auto hardware selection</span>
+                <p id="auto-hardware-summary" class="hint">Run the app with <code>model_path = "auto"</code> to enable this.</p>
+              </div>
+              <button id="btn-rebenchmark" class="button small" type="button">Re-run test</button>
+            </div>
             <div class="two-col">
               <label>
                 <span>Confidence threshold</span>

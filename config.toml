@@ -14,13 +14,19 @@ reconnect_delay_seconds = 5
 ffmpeg_path = "ffmpeg"
 
 [yolo]
-model_path = "models/yolo11n.onnx"
+model_path = "auto"              # "auto" benchmarks this machine and picks a model
 confidence_threshold = 0.50
 interval_ms = 1000
 detect_person = true
 detect_car = true
 device = "cpu"                   # "cpu", "cuda", or "directml" (compile feature required)
 # onnxruntime_path = "onnxruntime.dll"  # optional; auto-detected if omitted
+
+[yolo.auto]
+allow_download = true            # download pinned n/s/m models into models/auto
+max_model = "m"                  # "n", "s", "m", "l", or "x"
+target_inference_ms = 0          # 0 = 40% of interval_ms (capped at 1500 ms)
+rebenchmark = "hardware"         # "hardware", "always", or "never"
 
 [storage]
 save_screenshots = true

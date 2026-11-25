@@ -1,15 +1,19 @@
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use chrono::{SecondsFormat, Utc};
+use tokio::sync::mpsc;
 
-use crate::config::InferenceDevice;
+use crate::config::{Config, InferenceDevice, AUTO_MODEL_PATH};
 use crate::database::NewDetection;
 use crate::detection::{save_screenshot, ClassFilter, Detection};
 use crate::frame::{next_analysis_deadline, VideoFrame};
-use crate::state::{AiState, AiStatus, AnalysisView, AppState, CameraState};
+use crate::hardware::{self, AutoReport};
+use crate::models;
+use crate::state::{AiState, AiStatus, AnalysisView, AppState, CameraState, InferenceCommand};
 use crate::yolo::{decode_jpeg, YoloEngine};
 
 pub struct InferenceWorker {
@@ -21,9 +25,11 @@ impl InferenceWorker {
     pub fn spawn(app: AppState) -> std::io::Result<Self> {
         let stop = app.inference_stop_flag();
         let worker_stop = Arc::clone(&stop);
+        let (sender, receiver) = mpsc::channel(4);
+        app.set_inference_control(sender);
         let handle = std::thread::Builder::new()
             .name("yolo-inference".to_string())
-            .spawn(move || run_worker(app, worker_stop))?;
+            .spawn(move || run_worker(app, worker_stop, receiver))?;
         Ok(Self {
             handle: Some(handle),
             stop,
@@ -59,47 +65,24 @@ impl Drop for InferenceWorker {
     }
 }
 
-fn run_worker(app: AppState, stop: Arc<AtomicBool>) {
-    let config = app.config();
-    tracing::info!(
-        model = %config.yolo.model_path,
-        device = config.yolo.device.as_str(),
-        "loading YOLO model"
-    );
-    let mut engine = match YoloEngine::load(&config.yolo) {
-        Ok(engine) => engine,
-        Err(error) => {
-            let message = error.to_string();
-            tracing::error!(error = %message, "unable to load YOLO model");
-            app.set_ai_status(AiStatus {
-                state: AiState::Error,
-                message: Some(message),
-                model_path: config.yolo.model_path.clone(),
-                device: config.yolo.device,
-                input_width: None,
-                input_height: None,
-            });
-            return;
-        }
-    };
+struct LoadedModel {
+    engine: YoloEngine,
+    model_path: String,
+    device: InferenceDevice,
+    input_width: u32,
+    input_height: u32,
+    auto: Option<AutoReport>,
+}
 
-    let (input_width, input_height) = engine.input_size();
-    let loaded_model_path = config.yolo.model_path.clone();
-    let loaded_device = config.yolo.device;
-    tracing::info!(
-        input_width,
-        input_height,
-        device = loaded_device.as_str(),
-        "YOLO model ready"
-    );
-    app.set_ai_status(AiStatus {
-        state: AiState::Ready,
-        message: None,
-        model_path: loaded_model_path.clone(),
-        device: loaded_device,
-        input_width: Some(input_width),
-        input_height: Some(input_height),
-    });
+fn run_worker(
+    app: AppState,
+    stop: Arc<AtomicBool>,
+    mut commands: mpsc::Receiver<InferenceCommand>,
+) {
+    let mut loaded = match initialize_model(&app, &stop) {
+        Some(loaded) => loaded,
+        None => return,
+    };
 
     let mut last_sequence: u64 = 0;
     let mut next_due = Instant::now();
@@ -110,6 +93,16 @@ fn run_worker(app: AppState, stop: Arc<AtomicBool>) {
         if stop.load(Ordering::Acquire) || app.is_shutting_down() {
             break;
         }
+
+        while let Ok(command) = commands.try_recv() {
+            match command {
+                InferenceCommand::Rebenchmark => {
+                    rebenchmark(&app, &stop, &mut loaded);
+                    next_due = Instant::now();
+                }
+            }
+        }
+
         if app.camera_status().state == CameraState::Stopped {
             sleep_interruptible(&stop, Duration::from_millis(100));
             continue;
@@ -134,24 +127,18 @@ fn run_worker(app: AppState, stop: Arc<AtomicBool>) {
         }
         last_sequence = frame.sequence;
 
-        match analyze_frame(&app, &mut engine, &config, &frame, &mut last_screenshot_log) {
+        match analyze_frame(
+            &app,
+            &mut loaded.engine,
+            &config,
+            &frame,
+            &mut last_screenshot_log,
+        ) {
             Ok(Some(analysis)) => {
                 consecutive_errors = 0;
                 app.record_analysis(analysis);
-                if app
-                    .ai_status()
-                    .message
-                    .as_deref()
-                    .is_some_and(|message| message.starts_with("inference failed"))
-                {
-                    refresh_ready_status(
-                        &app,
-                        &loaded_model_path,
-                        loaded_device,
-                        input_width,
-                        input_height,
-                        None,
-                    );
+                if app.ai_status().message.is_some() {
+                    refresh_ready_status(&app, &loaded, None);
                 }
             }
             Ok(None) => {
@@ -162,14 +149,7 @@ fn run_worker(app: AppState, stop: Arc<AtomicBool>) {
                 if consecutive_errors == 1 || consecutive_errors.is_multiple_of(10) {
                     tracing::warn!(error = %error, consecutive_errors, "analysis failed");
                 }
-                refresh_ready_status(
-                    &app,
-                    &loaded_model_path,
-                    loaded_device,
-                    input_width,
-                    input_height,
-                    Some(format!("inference failed: {error}")),
-                );
+                refresh_ready_status(&app, &loaded, Some(format!("inference failed: {error}")));
             }
         }
 
@@ -177,6 +157,237 @@ fn run_worker(app: AppState, stop: Arc<AtomicBool>) {
     }
 
     tracing::info!("inference worker stopped");
+}
+
+fn initialize_model(app: &AppState, stop: &AtomicBool) -> Option<LoadedModel> {
+    let config = app.config();
+    let auto_enabled = config.yolo.model_path == AUTO_MODEL_PATH;
+
+    if !auto_enabled {
+        tracing::info!(
+            model = %config.yolo.model_path,
+            device = config.yolo.device.as_str(),
+            "loading YOLO model"
+        );
+        return match load_engine(app, &config, PathBuf::from(&config.yolo.model_path), None) {
+            Ok(loaded) => Some(loaded),
+            Err(message) => {
+                tracing::error!(error = %message, "unable to load YOLO model");
+                app.set_ai_status(AiStatus {
+                    state: AiState::Error,
+                    message: Some(message),
+                    model_path: config.yolo.model_path.clone(),
+                    device: config.yolo.device,
+                    input_width: None,
+                    input_height: None,
+                    auto: None,
+                });
+                None
+            }
+        };
+    }
+
+    let device = config.yolo.device;
+    let mut progress = |message: String| {
+        app.set_ai_status(AiStatus {
+            state: AiState::Benchmarking,
+            message: Some(message),
+            model_path: AUTO_MODEL_PATH.to_string(),
+            device,
+            input_width: None,
+            input_height: None,
+            auto: None,
+        });
+    };
+
+    let report = match hardware::resolve(&config, false, stop, &mut progress) {
+        Ok(report) => report,
+        Err(error) => {
+            let message = format!("automatic model selection failed: {error}");
+            tracing::error!(error = %message);
+            if let Some(legacy) = models::legacy_model() {
+                tracing::warn!(
+                    model = %legacy.display(),
+                    "falling back to the local yolo11n model"
+                );
+                let warning = format!("{message}; using {}", legacy.display());
+                return match load_engine(app, &config, legacy, None) {
+                    Ok(mut loaded) => {
+                        loaded.auto = None;
+                        app.set_ai_status(AiStatus {
+                            state: AiState::Ready,
+                            message: Some(warning),
+                            model_path: loaded.model_path.clone(),
+                            device,
+                            input_width: Some(loaded.input_width),
+                            input_height: Some(loaded.input_height),
+                            auto: None,
+                        });
+                        Some(loaded)
+                    }
+                    Err(error) => {
+                        set_error_status(app, &message, error, &config);
+                        None
+                    }
+                };
+            }
+            set_error_status(app, &message, String::new(), &config);
+            return None;
+        }
+    };
+
+    let path = PathBuf::from(&report.selected_model_path);
+    match load_engine(app, &config, path.clone(), Some(report)) {
+        Ok(loaded) => Some(loaded),
+        Err(message) => {
+            if let Some(legacy) = models::legacy_model() {
+                if legacy != path {
+                    tracing::warn!(
+                        error = %message,
+                        model = %legacy.display(),
+                        "the automatically selected model failed; trying the local yolo11n fallback"
+                    );
+                    if let Ok(mut loaded) = load_engine(app, &config, legacy.clone(), None) {
+                        loaded.auto = None;
+                        app.set_ai_status(AiStatus {
+                            state: AiState::Ready,
+                            message: Some(format!(
+                                "automatically selected model failed ({message}); using {}",
+                                legacy.display()
+                            )),
+                            model_path: loaded.model_path.clone(),
+                            device,
+                            input_width: Some(loaded.input_width),
+                            input_height: Some(loaded.input_height),
+                            auto: None,
+                        });
+                        return Some(loaded);
+                    }
+                }
+            }
+            set_error_status(
+                app,
+                "unable to load the automatically selected model",
+                message,
+                &config,
+            );
+            None
+        }
+    }
+}
+
+fn rebenchmark(app: &AppState, stop: &AtomicBool, loaded: &mut LoadedModel) {
+    let config = app.config();
+    if config.yolo.model_path != AUTO_MODEL_PATH {
+        refresh_ready_status(
+            app,
+            loaded,
+            Some("Automatic model selection is disabled; set model_path = \"auto\".".to_string()),
+        );
+        return;
+    }
+
+    let device = config.yolo.device;
+    let mut progress = |message: String| {
+        app.set_ai_status(AiStatus {
+            state: AiState::Benchmarking,
+            message: Some(message),
+            model_path: AUTO_MODEL_PATH.to_string(),
+            device,
+            input_width: None,
+            input_height: None,
+            auto: None,
+        });
+    };
+
+    match hardware::resolve(&config, true, stop, &mut progress) {
+        Ok(report) => {
+            let path = PathBuf::from(&report.selected_model_path);
+            match load_engine(app, &config, path, Some(report)) {
+                Ok(new_loaded) => {
+                    tracing::info!(
+                        model = %new_loaded.model_path,
+                        "automatic model selection updated"
+                    );
+                    *loaded = new_loaded;
+                }
+                Err(error) => {
+                    tracing::error!(error = %error, "the re-selected model failed to load");
+                    refresh_ready_status(
+                        app,
+                        loaded,
+                        Some(format!(
+                            "hardware test finished, but the selected model failed: {error}"
+                        )),
+                    );
+                }
+            }
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, "hardware re-test failed");
+            refresh_ready_status(app, loaded, Some(format!("hardware test failed: {error}")));
+        }
+    }
+}
+
+fn load_engine(
+    app: &AppState,
+    config: &Config,
+    path: PathBuf,
+    auto: Option<AutoReport>,
+) -> Result<LoadedModel, String> {
+    let mut yolo = config.yolo.clone();
+    yolo.model_path = path.display().to_string();
+    tracing::info!(
+        model = %yolo.model_path,
+        device = yolo.device.as_str(),
+        "loading YOLO model"
+    );
+    let engine = YoloEngine::load(&yolo).map_err(|error| error.to_string())?;
+    let (input_width, input_height) = engine.input_size();
+    let loaded = LoadedModel {
+        engine,
+        model_path: yolo.model_path.clone(),
+        device: yolo.device,
+        input_width,
+        input_height,
+        auto,
+    };
+    tracing::info!(
+        input_width,
+        input_height,
+        device = loaded.device.as_str(),
+        model = %loaded.model_path,
+        "YOLO model ready"
+    );
+    app.set_ai_status(AiStatus {
+        state: AiState::Ready,
+        message: None,
+        model_path: loaded.model_path.clone(),
+        device: loaded.device,
+        input_width: Some(input_width),
+        input_height: Some(input_height),
+        auto: loaded.auto.clone(),
+    });
+    Ok(loaded)
+}
+
+fn set_error_status(app: &AppState, message: &str, detail: String, config: &Config) {
+    let message = if detail.is_empty() {
+        message.to_string()
+    } else {
+        format!("{message}: {detail}")
+    };
+    tracing::error!(error = %message, "unable to load the selected YOLO model");
+    app.set_ai_status(AiStatus {
+        state: AiState::Error,
+        message: Some(message),
+        model_path: config.yolo.model_path.clone(),
+        device: config.yolo.device,
+        input_width: None,
+        input_height: None,
+        auto: None,
+    });
 }
 
 fn analyze_frame(
@@ -302,31 +513,25 @@ fn enqueue_detection_events(
     }
 }
 
-fn refresh_ready_status(
-    app: &AppState,
-    loaded_model_path: &str,
-    loaded_device: InferenceDevice,
-    input_width: u32,
-    input_height: u32,
-    message: Option<String>,
-) {
+fn refresh_ready_status(app: &AppState, loaded: &LoadedModel, message: Option<String>) {
     let current = app.ai_status();
     if current.message == message
         && current.state == AiState::Ready
-        && current.input_width == Some(input_width)
-        && current.input_height == Some(input_height)
-        && current.model_path == loaded_model_path
-        && current.device == loaded_device
+        && current.input_width == Some(loaded.input_width)
+        && current.input_height == Some(loaded.input_height)
+        && current.model_path == loaded.model_path
+        && current.device == loaded.device
     {
         return;
     }
     app.set_ai_status(AiStatus {
         state: AiState::Ready,
         message,
-        model_path: loaded_model_path.to_string(),
-        device: loaded_device,
-        input_width: Some(input_width),
-        input_height: Some(input_height),
+        model_path: loaded.model_path.clone(),
+        device: loaded.device,
+        input_width: Some(loaded.input_width),
+        input_height: Some(loaded.input_height),
+        auto: loaded.auto.clone(),
     });
 }
 

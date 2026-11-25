@@ -11,6 +11,9 @@
 - Automatic reconnects with exponential backoff and visible connection status.
 - Start, Stop, and Reconnect controls.
 - Local YOLO inference through the `ort` crate and ONNX Runtime.
+- Automatic hardware test on first start selects a YOLO11 model tier (n/s/m by
+  default) and downloads the pinned model when needed, so low-end machines stay
+  responsive and stronger machines get better accuracy.
 - Only COCO class 0 (person) and class 2 (car) are reported.
 - Letterbox preprocessing, RGB/NCHW normalization, raw YOLO output decoding,
   per-class NMS, and configurable confidence threshold (default `0.50`).
@@ -66,6 +69,8 @@ slot. The inference thread never blocks the RTSP reader.
 | `src/rtsp.rs` | FFmpeg command, MJPEG parser, camera manager, reconnects. |
 | `src/frame.rs` | Latest-frame watch store, FPS meter, sampling schedule. |
 | `src/yolo.rs` | ONNX Runtime setup, preprocessing, output decode, NMS. |
+| `src/hardware.rs` | Hardware fingerprint, synthetic benchmark, model tier selection, cache. |
+| `src/models.rs` | Pinned model registry, verified downloads, local model discovery. |
 | `src/detection.rs` | Person/car types, IoU, screenshot rendering and cleanup. |
 | `src/inference.rs` | One-second sampling loop, screenshots, event generation. |
 | `src/database.rs` | Bounded SQLite worker and history queries. |
@@ -95,7 +100,9 @@ Tested on Windows 11 with Rust 1.100 (GNU toolchain), FFmpeg 9.1, ONNX Runtime
    ```powershell
    powershell -ExecutionPolicy Bypass -File .\scripts\fetch-onnxruntime.ps1
    ```
-4. **Get a model** (10.7 MB, SHA-256 checked by the script):
+4. **Get a model** (optional with automatic selection). The shipped config uses
+   `model_path = "auto"`, which downloads and verifies the best model for this
+   machine on first start. To pre-fetch the 10.7 MB smoke-test model instead:
    ```powershell
    powershell -ExecutionPolicy Bypass -File .\scripts\fetch-model.ps1
    ```
@@ -127,7 +134,7 @@ cargo build --release
 # ONNX Runtime 1.31.1 CPU shared library in the project working directory
 chmod +x scripts/fetch-onnxruntime.sh scripts/fetch-model.sh
 ./scripts/fetch-onnxruntime.sh
-./scripts/fetch-model.sh
+# Optional: ./scripts/fetch-model.sh  (auto mode downloads the selected model)
 
 # Edit config.toml, then run
 cargo run --release -- --config config.toml
@@ -140,8 +147,8 @@ need FFmpeg development headers or GStreamer development packages.
 
 `./install.sh` automates the Linux/macOS quick start. It installs missing
 packages when a supported package manager is available, installs Rust 1.92+
-through rustup when needed, downloads the model and ONNX Runtime, and builds the
-release binary.
+through rustup when needed, downloads the fallback model and ONNX Runtime, and
+builds the release binary.
 
 ```bash
 ./install.sh                 # prepare and build in this repository
@@ -149,13 +156,43 @@ release binary.
 ./install.sh --system --service --start
 ```
 
-`--prefix` copies the binary, ONNX Runtime, model, config, screenshot directory,
-and database into a bundle and rewrites the generated `config.toml` to use
-absolute paths. `--service` installs a systemd unit (a user unit for `--prefix`,
-a system unit for `--system`), and `--start` enables and starts it. Additional
-flags: `--no-deps`, `--no-build`, `--force`, `--cuda`, and `--help`.
+`--prefix` copies the binary, ONNX Runtime, fallback model, config, screenshot
+directory, and database into a bundle, rewriting the generated `config.toml` to
+use absolute paths (while leaving `model_path = "auto"` intact for
+hardware-based model selection). `--service` installs a systemd unit (a user
+unit for `--prefix`, a system unit for `--system`), and `--start` enables and
+starts it. Additional flags: `--no-deps`, `--no-build`, `--force`, `--cuda`, and
+`--help`.
 
 ## YOLO model
+
+### Automatic hardware selection (default)
+
+With `yolo.model_path = "auto"` (the shipped default), YOLOCam benchmarks the
+machine on first start and whenever the hardware fingerprint changes. It runs a
+few warm-up and timed inferences with `yolo11n` at 640×640, then picks the
+largest tier whose p90 inference time fits the budget. The default budget is
+40% of `yolo.interval_ms`, capped at 1500 ms.
+
+| Tier | File | Approx. size | Typical use |
+| --- | --- | --- | --- |
+| `n320` | `yolo11n_320.onnx` | 10.6 MB | very weak hardware fallback |
+| `n640` | `yolo11n_640.onnx` | 10.7 MB | low end |
+| `s640` | `yolo11s_640.onnx` | 38 MB | mid range |
+| `m640` | `yolo11m_640.onnx` | 81 MB | strong hardware |
+| `l640` / `x640` | `yolo11l_640.onnx` / `yolo11x_640.onnx` | 102 / 228 MB | opt-in via `max_model` |
+
+Selected models are downloaded from a pinned, SHA-256-verified registry into
+`models/auto/`, so an explicit model at `models/yolo11n.onnx` is never
+overwritten. The result is cached in `models/auto/selection.json`. If the
+download fails or `allow_download = false`, the app uses the best model already
+available and keeps running. Set `yolo.model_path` to an explicit path to
+disable the hardware test entirely.
+
+The registry uses [giangndm/yolo11-onnx](https://huggingface.co/giangndm/yolo11-onnx)
+(AGPL-3.0). The app downloads rather than bundles these weights; review the
+model licence before redistributing them. Use `allow_download = false` for a
+fully offline installation.
 
 ### Option A: use the smoke-test model
 
@@ -301,13 +338,19 @@ reconnect_delay_seconds = 5
 ffmpeg_path = "ffmpeg"
 
 [yolo]
-model_path = "models/yolo11n.onnx"
+model_path = "auto"
 confidence_threshold = 0.50
 interval_ms = 1000
 detect_person = true
 detect_car = true
 device = "cpu"
 # onnxruntime_path = "onnxruntime.dll"
+
+[yolo.auto]
+allow_download = true
+max_model = "m"
+target_inference_ms = 0
+rebenchmark = "hardware"
 
 [storage]
 save_screenshots = true
@@ -327,12 +370,16 @@ port = 8080
 | `camera.username` / `password` | none | Optional; prefer environment variables. |
 | `camera.reconnect_delay_seconds` | `5` | Base backoff delay (capped at 60s, up to 5 doublings). |
 | `camera.ffmpeg_path` | `ffmpeg` | Executable name or absolute path. |
-| `yolo.model_path` | `models/yolo11n.onnx` | FP32 Ultralytics YOLO11/v8 COCO ONNX. |
+| `yolo.model_path` | `auto` | `auto` benchmarks the hardware; an explicit path disables the test. FP32 Ultralytics YOLO11/v8 COCO ONNX. |
 | `yolo.confidence_threshold` | `0.50` | 0.0–1.0. Live-updatable. |
 | `yolo.interval_ms` | `1000` | 100–60000 ms. Live-updatable. |
 | `yolo.detect_person` / `detect_car` | `true` | At least one must be enabled. Live-updatable. |
 | `yolo.device` | `cpu` | `cpu`, `cuda`, or `directml`; GPU requires a feature build. |
 | `yolo.onnxruntime_path` | auto | Explicit runtime library path. |
+| `yolo.auto.allow_download` | `true` | Download pinned models into `models/auto/`. `false` uses local models only. |
+| `yolo.auto.max_model` | `m` | Largest tier auto-selection may choose: `n`, `s`, `m`, `l`, or `x`. |
+| `yolo.auto.target_inference_ms` | `0` | p90 budget. `0` means 40% of `interval_ms`, capped at 1500 ms. |
+| `yolo.auto.rebenchmark` | `hardware` | `hardware`, `always`, or `never`; the UI can always force a re-run. |
 | `storage.save_screenshots` | `true` | One annotated JPEG per analyzed frame with detections. |
 | `storage.screenshot_directory` | `./detections` | Created on startup if possible. |
 | `storage.retention_days` | `7` | 1–3650. Cleanup runs hourly and only deletes this app's timestamped `.jpg` files. |
@@ -350,7 +397,7 @@ app from the project root, or use absolute paths.
 | `YOLOCAM_RTSP_URL` | `camera.rtsp_url` (may contain credentials). |
 | `YOLOCAM_RTSP_USERNAME` | `camera.username`. |
 | `YOLOCAM_RTSP_PASSWORD` | `camera.password`. |
-| `YOLOCAM_MODEL_PATH` | `yolo.model_path`. |
+| `YOLOCAM_MODEL_PATH` | `yolo.model_path` (`auto` enables hardware selection). |
 | `YOLOCAM_ONNXRUNTIME_PATH` | `yolo.onnxruntime_path`. |
 | `ORT_DYLIB_PATH` | Runtime library fallback path. |
 | `RUST_LOG` | Tracing filter, e.g. `yolocam=debug,ort=warn`. |
@@ -407,13 +454,14 @@ The camera starts automatically. Ctrl+C triggers graceful shutdown.
   people/cars, boxes from the latest analyzed frame.
 - **Statistics:** per-frame people/cars, cumulative person/car event totals,
   last detection timestamp, last analysis, camera FPS, inference time, full
-  pipeline time, current interval.
+  pipeline time, current interval, selected model, and hardware-test result.
 - **Detection history:** class and from/to filters, timestamps in local time,
   confidence, camera name, screenshot link.
-- **Settings:** RTSP URL, credentials, reconnect delay, FFmpeg path, model path,
-  confidence, interval, enabled classes, device, runtime path, screenshot
-  storage, retention. Model/device/runtime-path changes report that a restart is
-  required; other changes apply live.
+- **Settings:** RTSP URL, credentials, reconnect delay, FFmpeg path, model path
+  (or `auto`), confidence, interval, enabled classes, device, runtime path,
+  screenshot storage, retention, and a **Re-run test** button for auto mode.
+  Model/device/runtime-path changes report that a restart is required; other
+  changes apply live.
 
 The green/blue boxes are DOM overlays positioned over the live MJPEG frame. They
 show the newest completed analysis, so they can lag the live frame by up to one

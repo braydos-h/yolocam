@@ -1,6 +1,11 @@
 # Models
 
-Place the exported ONNX model here, for example `models/yolo11n.onnx`.
+The default configuration (`yolo.model_path = "auto"`) downloads a hardware
+selected model into `models/auto/` on first start. The registry is pinned by
+revision and SHA-256 in `src/models.rs`; see the main README for tiers and
+licensing. `models/yolo11n.onnx` remains a manual/offline fallback.
+
+Place a manually exported ONNX model here, for example `models/yolo11n.onnx`.
 
 The recommended export (Ultralytics YOLO11n, COCO classes, 640 input):
 

@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path as AxumPath, Query, Request, State};
-use axum::http::{header, HeaderValue};
+use axum::http::{header, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -46,6 +46,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/camera/start", post(camera_start))
         .route("/api/camera/stop", post(camera_stop))
         .route("/api/camera/reconnect", post(camera_reconnect))
+        .route("/api/hardware", get(hardware))
+        .route("/api/hardware/benchmark", post(run_hardware_benchmark))
         .route("/ws", get(websocket))
         .fallback(not_found)
         .with_state(state)
@@ -115,6 +117,42 @@ async fn health(State(app): State<AppState>) -> Json<serde_json::Value> {
 
 async fn stats(State(app): State<AppState>) -> Json<crate::state::LiveSnapshot> {
     Json(app.snapshot())
+}
+
+async fn hardware(State(app): State<AppState>) -> Json<serde_json::Value> {
+    let config = app.config();
+    let ai = app.ai_status();
+    let enabled = config.yolo.model_path == crate::config::AUTO_MODEL_PATH;
+    Json(json!({
+        "enabled": enabled,
+        "config": config.yolo.auto,
+        "target_ms": crate::hardware::target_ms(&config.yolo),
+        "hardware": crate::hardware::describe(config.yolo.device),
+        "candidates": crate::models::public_candidates(config.yolo.auto.max_model),
+        "selection": ai.auto,
+        "state": ai.state,
+        "model_path": ai.model_path,
+    }))
+}
+
+async fn run_hardware_benchmark(
+    State(app): State<AppState>,
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
+    let config = app.config();
+    if config.yolo.model_path != crate::config::AUTO_MODEL_PATH {
+        return Err(ApiError::bad_request(
+            "automatic model selection is disabled; set yolo.model_path = \"auto\" first",
+        ));
+    }
+    if app.ai_status().state == crate::state::AiState::Benchmarking {
+        return Err(ApiError::conflict("the hardware test is already running"));
+    }
+    if !app.request_rebenchmark() {
+        return Err(ApiError::service_unavailable(
+            "the inference worker is not available",
+        ));
+    }
+    Ok((StatusCode::ACCEPTED, Json(json!({ "status": "started" }))))
 }
 
 async fn get_settings(State(app): State<AppState>) -> Json<crate::config::PublicSettings> {

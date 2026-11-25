@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 
-use yolocam::config::Config;
+use yolocam::config::{Config, AUTO_MODEL_PATH};
 use yolocam::database::{Database, HistoryFilter, StoredCounts};
 use yolocam::detection::cleanup_screenshots;
 use yolocam::inference::InferenceWorker;
@@ -77,7 +77,9 @@ async fn run() -> Result<(), String> {
         ),
     }
 
-    if !std::path::Path::new(&config.yolo.model_path).is_file() {
+    if config.yolo.model_path != AUTO_MODEL_PATH
+        && !std::path::Path::new(&config.yolo.model_path).is_file()
+    {
         tracing::warn!(
             model = %config.yolo.model_path,
             "YOLO model file not found; AI features will report an error until it is provided"
@@ -146,6 +148,7 @@ async fn run() -> Result<(), String> {
                 device: config.yolo.device,
                 input_width: None,
                 input_height: None,
+                auto: None,
             });
             None
         }
@@ -301,7 +304,7 @@ fn parse_args() -> Result<PathBuf, String> {
             }
             "--help" | "-h" => {
                 println!(
-                    "yolocam {}\n\nUsage: yolocam [--config PATH]\n\nEnvironment:\n  YOLOCAM_CONFIG              Config file path (default: config.toml)\n  YOLOCAM_RTSP_URL            Overrides camera.rtsp_url\n  YOLOCAM_RTSP_USERNAME       Overrides camera.username\n  YOLOCAM_RTSP_PASSWORD       Overrides camera.password\n  YOLOCAM_MODEL_PATH          Overrides yolo.model_path\n  YOLOCAM_ONNXRUNTIME_PATH    Overrides yolo.onnxruntime_path\n  ORT_DYLIB_PATH              ONNX Runtime library path fallback\n  RUST_LOG                    tracing filter (default: yolocam=info,ort=warn)",
+                    "yolocam {}\n\nUsage: yolocam [--config PATH]\n\nEnvironment:\n  YOLOCAM_CONFIG              Config file path (default: config.toml)\n  YOLOCAM_RTSP_URL            Overrides camera.rtsp_url\n  YOLOCAM_RTSP_USERNAME       Overrides camera.username\n  YOLOCAM_RTSP_PASSWORD       Overrides camera.password\n  YOLOCAM_MODEL_PATH          Overrides yolo.model_path (auto = hardware selection)\n  YOLOCAM_ONNXRUNTIME_PATH    Overrides yolo.onnxruntime_path\n  ORT_DYLIB_PATH              ONNX Runtime library path fallback\n  RUST_LOG                    tracing filter (default: yolocam=info,ort=warn)",
                     env!("CARGO_PKG_VERSION")
                 );
                 std::process::exit(0);

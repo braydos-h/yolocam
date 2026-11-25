@@ -1027,6 +1027,33 @@ label small {
   gap: 10px;
 }
 
+.auto-hardware {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: #111;
+}
+
+.auto-hardware-title {
+  display: block;
+  font-size: 0.76rem;
+  font-weight: 620;
+  color: #c4c4c4;
+}
+
+.auto-hardware .hint {
+  margin: 4px 0 0;
+}
+
+.auto-hardware .button {
+  flex: 0 0 auto;
+}
+
 .toggle-row {
   display: flex;
   flex-wrap: wrap;
@@ -1302,6 +1329,10 @@ body.cinema-open {
   .side-panel,
   .settings-grid {
     grid-template-columns: 1fr;
+  }
+
+  .auto-hardware {
+    flex-direction: column;
   }
 
   .filter-actions {
