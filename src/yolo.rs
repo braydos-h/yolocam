@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use image::imageops::FilterType;
 use image::{ImageFormat, Rgb, RgbImage};
@@ -13,6 +14,11 @@ use crate::detection::{iou, BBox, ClassFilter, DetectedClass, Detection};
 
 pub const NMS_IOU_THRESHOLD: f32 = 0.45;
 const LETTERBOX_PADDING: u8 = 114;
+
+/// ONNX Runtime permits only one environment per process, so every model
+/// (including benchmark candidates) shares this one.
+static SHARED_ENVIRONMENT: OnceLock<Environment> = OnceLock::new();
+static ENVIRONMENT_INIT: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Error)]
 pub enum YoloError {
@@ -51,44 +57,7 @@ impl YoloEngine {
         }
 
         let runtime_path = resolve_onnxruntime_path(config)?;
-        let mut environment_builder =
-            ort::init_from(&runtime_path).map_err(|error| YoloError::RuntimeLoad {
-                path: runtime_path.display().to_string(),
-                message: error.to_string(),
-            })?;
-        environment_builder = environment_builder.with_telemetry(false);
-
-        #[cfg(feature = "cuda")]
-        if config.device == InferenceDevice::Cuda {
-            environment_builder = environment_builder
-                .with_execution_providers([ort::ep::CUDA::default().build().error_on_failure()]);
-        }
-        #[cfg(all(feature = "directml", target_os = "windows"))]
-        if config.device == InferenceDevice::DirectMl {
-            environment_builder =
-                environment_builder.with_execution_providers([ort::ep::DirectML::default()
-                    .build()
-                    .error_on_failure()]);
-        }
-        if config.device == InferenceDevice::Cuda && !cfg!(feature = "cuda") {
-            return Err(YoloError::UnsupportedDevice(
-                "device \"cuda\" requires building with --features cuda".into(),
-            ));
-        }
-        if config.device == InferenceDevice::DirectMl
-            && (!cfg!(feature = "directml") || !cfg!(windows))
-        {
-            return Err(YoloError::UnsupportedDevice(
-                "device \"directml\" requires Windows and a build with --features directml".into(),
-            ));
-        }
-
-        let environment = environment_builder
-            .build()
-            .map_err(|error| YoloError::RuntimeLoad {
-                path: runtime_path.display().to_string(),
-                message: error.to_string(),
-            })?;
+        let environment = shared_environment(&runtime_path, config)?;
 
         let threads = std::thread::available_parallelism()
             .map(|count| (count.get() / 2).clamp(1, 4))
@@ -198,6 +167,54 @@ impl YoloEngine {
             .map_err(|error| YoloError::Inference(error.to_string()))?;
         decode_yolo_output(values, &shape[..], &letterbox, filter)
     }
+}
+
+fn shared_environment(runtime_path: &Path, config: &YoloConfig) -> Result<Environment, YoloError> {
+    let _guard = ENVIRONMENT_INIT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(environment) = SHARED_ENVIRONMENT.get() {
+        return Ok(environment.clone());
+    }
+
+    if config.device == InferenceDevice::Cuda && !cfg!(feature = "cuda") {
+        return Err(YoloError::UnsupportedDevice(
+            "device \"cuda\" requires building with --features cuda".into(),
+        ));
+    }
+    if config.device == InferenceDevice::DirectMl && (!cfg!(feature = "directml") || !cfg!(windows))
+    {
+        return Err(YoloError::UnsupportedDevice(
+            "device \"directml\" requires Windows and a build with --features directml".into(),
+        ));
+    }
+
+    let mut environment_builder =
+        ort::init_from(runtime_path).map_err(|error| YoloError::RuntimeLoad {
+            path: runtime_path.display().to_string(),
+            message: error.to_string(),
+        })?;
+    environment_builder = environment_builder.with_telemetry(false);
+
+    #[cfg(feature = "cuda")]
+    if config.device == InferenceDevice::Cuda {
+        environment_builder = environment_builder
+            .with_execution_providers([ort::ep::CUDA::default().build().error_on_failure()]);
+    }
+    #[cfg(all(feature = "directml", target_os = "windows"))]
+    if config.device == InferenceDevice::DirectMl {
+        environment_builder = environment_builder
+            .with_execution_providers([ort::ep::DirectML::default().build().error_on_failure()]);
+    }
+
+    let environment = environment_builder
+        .build()
+        .map_err(|error| YoloError::RuntimeLoad {
+            path: runtime_path.display().to_string(),
+            message: error.to_string(),
+        })?;
+    let _ = SHARED_ENVIRONMENT.set(environment.clone());
+    Ok(environment)
 }
 
 fn resolve_onnxruntime_path(config: &YoloConfig) -> Result<PathBuf, YoloError> {

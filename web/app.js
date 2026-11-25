@@ -34,6 +34,8 @@
     lastDetection: $("last-detection"),
     lastAnalysis: $("last-analysis"),
     detectionInterval: $("detection-interval"),
+    aiModel: $("ai-model"),
+    hardwareTest: $("hardware-test"),
     btnFullscreen: $("btn-fullscreen"),
     historyFilters: $("history-filters"),
     filterClass: $("filter-class"),
@@ -57,6 +59,8 @@
     reconnectDelay: $("reconnect-delay"),
     ffmpegPath: $("ffmpeg-path"),
     modelPath: $("model-path"),
+    autoHardwareSummary: $("auto-hardware-summary"),
+    btnRebenchmark: $("btn-rebenchmark"),
     confidence: $("confidence"),
     intervalMs: $("interval-ms"),
     detectPerson: $("detect-person"),
@@ -92,6 +96,7 @@
     els.btnStop.addEventListener("click", () => cameraAction("stop"));
     els.btnReconnect.addEventListener("click", () => cameraAction("reconnect"));
     els.btnFullscreen.addEventListener("click", toggleFullscreen);
+    els.btnRebenchmark.addEventListener("click", rebenchmarkHardware);
     els.settingsForm.addEventListener("submit", saveSettings);
     els.historyFilters.addEventListener("submit", (event) => {
       event.preventDefault();
@@ -257,6 +262,7 @@
       : "—";
     els.lastAnalysis.textContent = analysis ? formatTime(analysis.analyzed_at) : "—";
     els.detectionInterval.textContent = `${Number(snapshot.detection_interval_ms || 0)} ms`;
+    updateHardwareView(snapshot);
 
     const liveLabel = state.status === "streaming"
       ? "LIVE"
@@ -384,6 +390,10 @@
       showBanner("info", ai.message || "Loading YOLO model…");
       return;
     }
+    if (ai.state === "benchmarking") {
+      showBanner("info", ai.message || "Testing hardware…");
+      return;
+    }
     if (ai.message) {
       showBanner("warning", ai.message);
       return;
@@ -399,6 +409,78 @@
   function hideBanner() {
     els.aiBanner.className = "banner hidden";
     els.aiBannerText.textContent = "";
+  }
+
+  function updateHardwareView(snapshot) {
+    const ai = (snapshot && snapshot.ai) || {};
+    const auto = ai.auto || null;
+    const autoEnabled = isAutoEnabled();
+    const busy = ai.state === "benchmarking";
+
+    const modelPath = ai.model_path || "";
+    if (modelPath && modelPath !== "auto") {
+      els.aiModel.textContent = basename(modelPath);
+    } else if (auto) {
+      els.aiModel.textContent = auto.selected_id || "auto";
+    } else {
+      els.aiModel.textContent = "—";
+    }
+
+    if (busy) {
+      els.hardwareTest.textContent = "Testing…";
+    } else if (auto) {
+      const selected = Number(auto.selected_p90_ms ?? 0);
+      const probe = Number(auto.probe_p90_ms ?? 0);
+      const target = Number(auto.target_ms ?? 0);
+      const cached = auto.cached ? " · cached" : "";
+      els.hardwareTest.textContent = `${auto.selected_id} ${formatMs(selected)} · ${auto.probe_id} ${formatMs(probe)} · target ${formatMs(target)}${cached}`;
+    } else {
+      els.hardwareTest.textContent = autoEnabled ? "Not run yet" : "Auto disabled";
+    }
+
+    if (busy) {
+      els.autoHardwareSummary.textContent = ai.message || "Testing hardware and selecting a model…";
+    } else if (!autoEnabled) {
+      els.autoHardwareSummary.textContent = 'Set the model path to "auto" to enable hardware-based model selection.';
+    } else if (auto) {
+      const hardware = auto.hardware || {};
+      const memory = hardware.total_memory_mb ? `, ${hardware.total_memory_mb} MB RAM` : "";
+      const notes = Array.isArray(auto.notes) && auto.notes.length ? ` ${auto.notes[auto.notes.length - 1]}` : "";
+      els.autoHardwareSummary.textContent =
+        `Selected ${auto.selected_id} for ${hardware.cores || "?"} cores${memory} on ${hardware.os || "unknown"}/${hardware.arch || "unknown"} (${hardware.device || "cpu"}). ` +
+        `Measured ${formatMs(auto.selected_p90_ms)} p90; target ${formatMs(auto.target_ms)}.${notes}`;
+    } else {
+      els.autoHardwareSummary.textContent = "No hardware result yet. The test runs once on startup.";
+    }
+
+    els.btnRebenchmark.disabled = busy || !autoEnabled;
+  }
+
+  function isAutoEnabled() {
+    const yolo = state.settings && state.settings.yolo;
+    return Boolean(yolo && yolo.model_path === "auto");
+  }
+
+  function basename(path) {
+    const value = String(path || "");
+    const parts = value.split(/[\\/]/);
+    return parts[parts.length - 1] || value;
+  }
+
+  async function rebenchmarkHardware() {
+    if (!isAutoEnabled()) {
+      showToast('Set the model path to "auto" first.', "error");
+      return;
+    }
+    els.btnRebenchmark.disabled = true;
+    try {
+      await api("/api/hardware/benchmark", { method: "POST" });
+      showToast("Hardware test started. Inference resumes when a model is selected.", "success");
+      window.setTimeout(refreshSnapshotFallback, 800);
+    } catch (error) {
+      showToast(error.message, "error");
+      els.btnRebenchmark.disabled = false;
+    }
   }
 
   function renderDetections(analysis) {
@@ -654,6 +736,9 @@
 
     const server = settings.server || {};
     els.serverNote.textContent = `Dashboard server: ${server.host || "127.0.0.1"}:${server.port || 8080}. Change server settings in config.toml and restart.`;
+    if (state.snapshot) {
+      updateHardwareView(state.snapshot);
+    }
   }
 
   async function saveSettings(event) {

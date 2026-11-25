@@ -129,6 +129,8 @@ impl fmt::Debug for CameraConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct YoloConfig {
+    /// A model path, or the sentinel `auto` to select a model from a hardware
+    /// benchmark on first start and whenever the hardware fingerprint changes.
     pub model_path: String,
     pub confidence_threshold: f32,
     pub interval_ms: u64,
@@ -138,6 +140,7 @@ pub struct YoloConfig {
     /// Optional explicit path to onnxruntime.dll / libonnxruntime.so.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub onnxruntime_path: Option<String>,
+    pub auto: YoloAutoConfig,
 }
 
 impl Default for YoloConfig {
@@ -150,8 +153,79 @@ impl Default for YoloConfig {
             detect_car: true,
             device: InferenceDevice::Cpu,
             onnxruntime_path: None,
+            auto: YoloAutoConfig::default(),
         }
     }
+}
+
+pub const AUTO_MODEL_PATH: &str = "auto";
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct YoloAutoConfig {
+    /// Download pinned models into models/auto when the selected tier is missing.
+    pub allow_download: bool,
+    /// Largest model the benchmark is allowed to select.
+    pub max_model: ModelSize,
+    /// p90 inference budget. Zero means 40% of yolo.interval_ms.
+    pub target_inference_ms: u64,
+    pub rebenchmark: RebenchmarkPolicy,
+}
+
+impl Default for YoloAutoConfig {
+    fn default() -> Self {
+        Self {
+            allow_download: true,
+            max_model: ModelSize::M,
+            target_inference_ms: 0,
+            rebenchmark: RebenchmarkPolicy::Hardware,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelSize {
+    N,
+    S,
+    #[default]
+    M,
+    L,
+    X,
+}
+
+impl ModelSize {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::N => "n",
+            Self::S => "s",
+            Self::M => "m",
+            Self::L => "l",
+            Self::X => "x",
+        }
+    }
+
+    pub fn rank(self) -> u8 {
+        match self {
+            Self::N => 0,
+            Self::S => 1,
+            Self::M => 2,
+            Self::L => 3,
+            Self::X => 4,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RebenchmarkPolicy {
+    /// Re-run only when cores, memory, OS, device, or runtime changes.
+    #[default]
+    Hardware,
+    /// Run the benchmark on every application start.
+    Always,
+    /// Never re-run automatically; the UI can still request a run.
+    Never,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -374,6 +448,13 @@ impl Config {
 
         if self.yolo.model_path.trim().is_empty() {
             problems.push("yolo.model_path must not be empty".into());
+        }
+        if self.yolo.auto.target_inference_ms != 0
+            && !(50..=MAX_INTERVAL_MS).contains(&self.yolo.auto.target_inference_ms)
+        {
+            problems.push(format!(
+                "yolo.auto.target_inference_ms must be 0 (automatic) or between 50 and {MAX_INTERVAL_MS}"
+            ));
         }
         if !self.yolo.confidence_threshold.is_finite()
             || !(0.0..=1.0).contains(&self.yolo.confidence_threshold)
@@ -781,6 +862,7 @@ impl Config {
                 detect_car: self.yolo.detect_car,
                 device: self.yolo.device,
                 onnxruntime_path: self.yolo.onnxruntime_path.clone(),
+                auto: self.yolo.auto.clone(),
             },
             storage: self.storage.clone(),
             server: PublicServerSettings {
@@ -912,6 +994,7 @@ pub struct PublicYoloSettings {
     pub detect_car: bool,
     pub device: InferenceDevice,
     pub onnxruntime_path: Option<String>,
+    pub auto: YoloAutoConfig,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1088,6 +1171,43 @@ port = 8080
         };
         let outcome = config.apply_update(&update).unwrap();
         assert_eq!(outcome.restart_required, vec!["model_path"]);
+    }
+
+    #[test]
+    fn parses_automatic_model_settings() {
+        let text = SAMPLE.replace(
+            "model_path = \"models/yolo11n.onnx\"",
+            "model_path = \"auto\"\n[yolo.auto]\nallow_download = false\nmax_model = \"s\"\ntarget_inference_ms = 250\nrebenchmark = \"always\"",
+        );
+        let config = Config::from_toml(&text).unwrap();
+        assert_eq!(config.yolo.model_path, "auto");
+        assert!(!config.yolo.auto.allow_download);
+        assert_eq!(config.yolo.auto.max_model, ModelSize::S);
+        assert_eq!(config.yolo.auto.target_inference_ms, 250);
+        assert_eq!(config.yolo.auto.rebenchmark, RebenchmarkPolicy::Always);
+    }
+
+    #[test]
+    fn rejects_bad_auto_budget() {
+        let text = SAMPLE.replace("[yolo]", "[yolo]\n[yolo.auto]\ntarget_inference_ms = 20");
+        let error = Config::from_toml(&text).unwrap_err().to_string();
+        assert!(error.contains("target_inference_ms"), "{error}");
+    }
+
+    #[test]
+    fn automatic_settings_round_trip_through_save() {
+        let text = SAMPLE.replace(
+            "model_path = \"models/yolo11n.onnx\"",
+            "model_path = \"auto\"\n\n[yolo.auto]\nallow_download = false\nmax_model = \"s\"\ntarget_inference_ms = 250\nrebenchmark = \"always\"\n\n[unused]",
+        );
+        // Remove the follow-on keys that would otherwise belong to [unused].
+        let config = Config::from_toml(&text).unwrap();
+        let serialized = toml::to_string_pretty(&config).unwrap();
+        let reloaded: Config = toml::from_str(&serialized).unwrap();
+        assert_eq!(reloaded.yolo.model_path, "auto");
+        assert_eq!(reloaded.yolo.auto.max_model, ModelSize::S);
+        assert!(!reloaded.yolo.auto.allow_download);
+        assert_eq!(reloaded.yolo.auto.target_inference_ms, 250);
     }
 
     #[test]

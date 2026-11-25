@@ -6,6 +6,7 @@ use std::time::Instant;
 use chrono::{SecondsFormat, Utc};
 use serde::Serialize;
 use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::{Config, InferenceDevice};
@@ -93,6 +94,7 @@ impl CameraStatus {
 #[serde(rename_all = "snake_case")]
 pub enum AiState {
     Loading,
+    Benchmarking,
     Ready,
     Error,
     Stopped,
@@ -106,6 +108,7 @@ pub struct AiStatus {
     pub device: InferenceDevice,
     pub input_width: Option<u32>,
     pub input_height: Option<u32>,
+    pub auto: Option<crate::hardware::AutoReport>,
 }
 
 impl AiStatus {
@@ -117,8 +120,14 @@ impl AiStatus {
             device,
             input_width: None,
             input_height: None,
+            auto: None,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InferenceCommand {
+    Rebenchmark,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -197,6 +206,7 @@ struct AppInner {
     events: broadcast::Sender<WsEvent>,
     shutdown: CancellationToken,
     inference_stop: Arc<AtomicBool>,
+    inference_control: RwLock<Option<mpsc::Sender<InferenceCommand>>>,
     started_at: Instant,
 }
 
@@ -225,6 +235,7 @@ impl AppState {
             events,
             shutdown: CancellationToken::new(),
             inference_stop: Arc::new(AtomicBool::new(false)),
+            inference_control: RwLock::new(None),
             started_at: Instant::now(),
         });
         Self { inner }
@@ -268,6 +279,29 @@ impl AppState {
 
     pub fn inference_stop_flag(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.inner.inference_stop)
+    }
+
+    pub fn set_inference_control(&self, sender: mpsc::Sender<InferenceCommand>) {
+        *self
+            .inner
+            .inference_control
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(sender);
+    }
+
+    /// Ask the inference worker to run the hardware test and load the
+    /// resulting model without restarting the process.
+    pub fn request_rebenchmark(&self) -> bool {
+        let sender = self
+            .inner
+            .inference_control
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        match sender {
+            Some(sender) => sender.try_send(InferenceCommand::Rebenchmark).is_ok(),
+            None => false,
+        }
     }
 
     pub fn is_shutting_down(&self) -> bool {
