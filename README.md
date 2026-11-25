@@ -136,6 +136,25 @@ cargo run --release -- --config config.toml
 FFmpeg is passed the RTSP URL and writes JPEG frames to a pipe. You do **not**
 need FFmpeg development headers or GStreamer development packages.
 
+### Automated installer
+
+`./install.sh` automates the Linux/macOS quick start. It installs missing
+packages when a supported package manager is available, installs Rust 1.92+
+through rustup when needed, downloads the model and ONNX Runtime, and builds the
+release binary.
+
+```bash
+./install.sh                 # prepare and build in this repository
+./install.sh --prefix DIR    # also install a self-contained bundle
+./install.sh --system --service --start
+```
+
+`--prefix` copies the binary, ONNX Runtime, model, config, screenshot directory,
+and database into a bundle and rewrites the generated `config.toml` to use
+absolute paths. `--service` installs a systemd unit (a user unit for `--prefix`,
+a system unit for `--system`), and `--start` enables and starts it. Additional
+flags: `--no-deps`, `--no-build`, `--force`, `--cuda`, and `--help`.
+
 ## YOLO model
 
 ### Option A: use the smoke-test model
