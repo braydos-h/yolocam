@@ -225,6 +225,21 @@
               <input id="rtsp-url" type="text" spellcheck="false" autocomplete="off" placeholder="rtsp://192.168.1.100:554/stream1">
               <small>Credentials in a pasted URL are moved out of the URL and never returned by the API.</small>
             </label>
+            <div class="discover-block">
+              <div class="discover-controls">
+                <button id="btn-discover" class="button small" type="button">Find cameras</button>
+                <input id="discover-subnet" type="text" spellcheck="false" autocomplete="off" placeholder="Subnet (optional) · 192.168.1.0/24" aria-label="Subnet to scan">
+              </div>
+              <small>Scans this network for ONVIF and RTSP cameras. Discovery never sends passwords.</small>
+              <div id="discover-panel" class="discover-panel hidden">
+                <div class="discover-head">
+                  <span id="discover-status" class="subtle" role="status" aria-live="polite">Scanning…</span>
+                  <button id="btn-discover-close" class="button small" type="button">Hide</button>
+                </div>
+                <ul id="discover-results" class="discover-results"></ul>
+                <p id="discover-notes" class="hint"></p>
+              </div>
+            </div>
             <div class="two-col">
               <label>
                 <span>Username</span>

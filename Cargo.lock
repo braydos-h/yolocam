@@ -2151,6 +2151,7 @@ dependencies = [
  "font8x8",
  "futures-util",
  "image",
+ "libc",
  "memchr",
  "ort",
  "percent-encoding",

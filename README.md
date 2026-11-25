@@ -10,6 +10,9 @@
 - Username/password support, including credentials embedded in a pasted RTSP URL.
 - Automatic reconnects with exponential backoff and visible connection status.
 - Start, Stop, and Reconnect controls.
+- One-click camera discovery: ONVIF WS-Discovery, SSDP/UPnP metadata, and a
+  bounded RTSP port/path scan that reports verified streams, codecs, and
+  login-protected cameras without sending passwords.
 - Local YOLO inference through the `ort` crate and ONNX Runtime.
 - Automatic hardware test on first start selects a YOLO11 model tier (n/s/m by
   default) and downloads the pinned model when needed, so low-end machines stay
@@ -67,6 +70,7 @@ slot. The inference thread never blocks the RTSP reader.
 | `src/main.rs` | Startup, worker lifecycle, shutdown, CLI. |
 | `src/config.rs` | TOML parsing, validation, env overrides, redaction, updates. |
 | `src/rtsp.rs` | FFmpeg command, MJPEG parser, camera manager, reconnects. |
+| `src/discovery.rs` | ONVIF/SSDP discovery, RTSP port scan, stream probing. |
 | `src/frame.rs` | Latest-frame watch store, FPS meter, sampling schedule. |
 | `src/yolo.rs` | ONNX Runtime setup, preprocessing, output decode, NMS. |
 | `src/hardware.rs` | Hardware fingerprint, synthetic benchmark, model tier selection, cache. |
@@ -499,6 +503,7 @@ screenshot returns 404.
 | `GET` | `/api/settings` | Safe settings (no credentials). |
 | `POST`/`PUT` | `/api/settings` | Partial settings update; saves `config.toml`. |
 | `GET` | `/api/history` | Detection rows. Query: `class=person\|car`, `from`, `to` (RFC 3339), `limit` (≤500), `offset`. |
+| `GET` | `/api/discover` | Scan the LAN for RTSP cameras. Query: `subnet` (optional IPv4/CIDR, default local /24), `timeout_ms` (100–3000). |
 | `GET` | `/api/frame.jpg` | Latest decoded JPEG, or 204. |
 | `GET` | `/api/stream` | Multipart MJPEG (`multipart/x-mixed-replace`). |
 | `GET` | `/api/screenshots/{filename}` | Stored annotated JPEG. Traversal-safe. |
@@ -513,6 +518,29 @@ Settings updates are partial. Omitted fields are unchanged. For credentials:
 credentials unless new credentials are supplied. Some changes are applied
 immediately (threshold, interval, enabled classes, screenshots); changes to
 `model_path`, `device`, or `onnxruntime_path` return them in `restart_required`.
+
+## Finding RTSP streams automatically
+
+Open **Settings → Camera** and press **Find cameras**. The scan:
+
+1. Sends an ONVIF WS-Discovery probe to `239.255.255.250:3702` and an SSDP
+   M-SEARCH to `239.255.255.250:1900`, then reads device names and models from
+   the responses.
+2. Scans the locally routed private IPv4 `/24` on RTSP ports `554`, `8554`,
+   `10554`, and `1554`, with bounded concurrency and a short connect timeout.
+3. Sends unauthenticated RTSP `OPTIONS`/`DESCRIBE` requests for common stream
+   paths (for example `/stream1`, `/Streaming/Channels/101`, and
+   `/cam/realmonitor?channel=1&subtype=0`). A `200 OK` confirms the stream and
+   SDP reports the codec; a `401` reports the authentication realm.
+
+Choose **Use stream** to fill in the RTSP URL. If the camera requires a login,
+enter the username and password in the same form and save.
+
+Discovery only scans private IPv4 ranges (`10/8`, `172.16/12`, `192.168/16`,
+`169.254/16`, `100.64/10`) and accepts at most 1024 hosts per scan. To scan a
+different VLAN, enter a subnet such as `192.168.50.0/24` before pressing the
+button. Discovery never sends credentials and does not attempt to guess
+passwords.
 
 ## Testing with an RTSP camera
 
@@ -608,6 +636,13 @@ Use FFmpeg 5.1 or newer. Older builds may not support `-fps_mode`.
 Verify username/password and the exact stream path with `ffprobe`. H.265/H.264
 are supported; an unsupported or non-existent path shows the FFmpeg error in
 the UI and logs.
+
+**Find cameras returns no streams**
+Multicast UDP 3702/1900 may be blocked by the host firewall, and some cameras
+ship with ONVIF disabled. Enter the camera subnet explicitly (for example
+`192.168.1.0/24`), confirm RTSP is enabled in the camera settings, and check
+that the camera is on the same VLAN as this machine. A camera that answers only
+after login appears as **Login required** with unverified candidate paths.
 
 **`ONNX Runtime library not found` / load failure**
 Run the fetch script or set `yolo.onnxruntime_path` / `ORT_DYLIB_PATH`. The

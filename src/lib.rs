@@ -2,6 +2,7 @@ pub mod api;
 pub mod config;
 pub mod database;
 pub mod detection;
+pub mod discovery;
 pub mod error;
 pub mod frame;
 pub mod hardware;
